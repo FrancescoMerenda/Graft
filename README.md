@@ -15,7 +15,7 @@
   <a href="https://scorecard.dev/viewer/?uri=github.com/NanoNets/Graft"><img src="https://img.shields.io/ossf-scorecard/github.com/NanoNets/Graft?style=for-the-badge&label=openssf%20scorecard" /></a>
 </p>
 
-### Up to **4× cheaper** and **4× faster** — with no loss of correctness.
+### Up to **4× cheaper** and **3× faster** — with better or no loss of correctness.
 
 <sub>Measured on real tasks (real questions + real merged PRs) in popular open-source repos — PocketBase, ollama, Excalidraw. Same agent, same file tools; only the context differs. [Full per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
@@ -367,7 +367,7 @@ Graft never answered worse than cold, on any corpus. The pull variant gave up mo
 
 The sweep above measures the mechanism. The real test is whether graft helps an agent **ship real changes** on code people actually run — not just answer questions. So we benchmark it on popular open-source repos: **15 tasks each** — 10 real developer questions + **5 merged pull requests**, each re-implemented from its base commit and scored against the files the maintainers actually changed. Same agent (Claude Opus), same file tools; the only difference is whether graft is wired in.
 
-Across these repos graft runs **up to 4× cheaper and 4× faster**, with no loss of correctness — it reproduces the real merged PRs by touching the same files the maintainers did. Per-repo detail below.
+Across these repos graft runs **up to 4× cheaper and 3× faster**, with better or no loss of correctness — it reproduces the real merged PRs by touching the same files the maintainers did. Per-repo detail below.
 
 ### PocketBase (Go, ~350 files)
 
