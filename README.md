@@ -83,6 +83,12 @@ Every task, your coding agent starts blind. Before it changes anything, it re-ex
 
 Humans onboard to a codebase once. Agents onboard every single time.
 
+<p align="center">
+  <a href="assets/graft-site-act-demo.mp4">
+    <img src="assets/graft-site-act-poster.png" alt="A no-map agent's exploration trail wandering file to file before it finds what it needs" width="820"/>
+  </a>
+</p>
+
 ---
 
 ## What Graft does
