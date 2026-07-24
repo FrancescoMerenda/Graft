@@ -201,6 +201,13 @@ Where a CLI agent supports user-level `hooks.json`, `init` also installs Graft's
 - **auto-sync** — after you edit code, Graft rebuilds the graph in the background at the end of the turn (structural, `$0` — it never calls the LLM on its own)
 - **context on tap** — each prompt pulls the matching nodes into the session; editing a file surfaces what depends on it ("blast radius"); new sessions start with the repo map
 
+<p align="center">
+  <a href="assets/graft-hook-blast-radius-demo.mp4">
+    <img src="assets/graft-hook-blast-radius-poster.png" alt="graft's post-edit hook: editing node-file.ts prints its blast radius (who depends on it) inline, the statusline flips stale → syncing → synced on its own, and the same dependents light up in graft viz" width="820"/>
+  </a>
+  <br/><sub><a href="assets/graft-hook-blast-radius-demo.mp4">▶ watch the hook fire</a> — edit a file → blast radius appears inline → graph auto-resyncs → confirmed in <code>graft viz</code></sub>
+</p>
+
 `graft init` is idempotent and never clobbers your existing `.claude/settings.json` — it merges its blocks and leaves the rest alone. Want the LLM summaries too? Run `graft build --deep` (with a key) whenever you like; auto-sync will never do it for you.
 
 ---
@@ -309,6 +316,13 @@ once you know where you're working.
 
 `graft viz` opens a local, interactive view of both graphs — no install, no dev
 server; the viewer ships prebuilt inside the package.
+
+<p align="center">
+  <a href="assets/graft-viz-demo.mp4">
+    <img src="assets/graft-viz-poster.png" alt="graft viz — searching a symbol and jumping to it lights up its dependency graph: amber edges are what it depends on, teal is what depends on it" width="820"/>
+  </a>
+  <br/><sub><a href="assets/graft-viz-demo.mp4">▶ watch the full walkthrough</a> — search → jump to a node → Code graph → Outline tree</sub>
+</p>
 
 - **Context** tab — the architecture graph from `graft/*.md`. Nodes colored by
   type, sized by connectedness.
