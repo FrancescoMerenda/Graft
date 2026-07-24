@@ -17,7 +17,13 @@
 
 ### Up to **4× cheaper** and **3× faster**, with better or no loss of correctness.
 
-<sub>Measured on real tasks (real questions + real merged PRs) in popular open-source repos: PocketBase, ollama, Excalidraw. Same agent, same file tools; only the context differs. [Full per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+| Averaged across real tasks | Standard Claude Code | With graft |
+|---|---|---|
+| Cost | baseline | **~29% less** |
+| Wall-clock | baseline | **~21% less** |
+| Correctness | baseline | **matched** (reproduced the merged PRs) |
+
+<sub>Measured on real tasks (real questions + real merged PRs) in popular open-source repos: PocketBase, ollama, Excalidraw. Same agent, same file tools; only the context differs. The "up to 4×" figures are the biggest single-task wins; the table is the average. [Full per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
