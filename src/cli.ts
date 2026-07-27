@@ -311,12 +311,12 @@ program
 program
   .command("callers")
   .description(
-    "Who calls/references a symbol ($0, no LLM). --direction out gives callees (what it calls); --depth N walks transitively for full blast radius",
+    "Who calls/references a symbol ($0, no LLM). --direction out gives callees (what it calls); --depth N (or all) walks transitively for full blast radius",
   )
   .argument("<symbol>", "bare name, qualified (Class.method), or package-qualified (pkg.Fn)")
   .argument("[dir]", "repository root", ".")
   .option("--direction <in|out>", 'edge direction: "in" = callers (default), "out" = callees')
-  .option("-d, --depth <n>", "walk transitively up to N hops for blast radius (default 1)")
+  .option("-d, --depth <n>", 'walk transitively up to N hops for blast radius, or "all" for the full connected closure (default 1)')
   .option("--in <path>", "narrow matches to nodes whose path contains this substring")
   .option("--json", "output as JSON")
   .action(
@@ -329,7 +329,9 @@ program
       if (!opts.json && readWorkspace(resolve(dir), globalOpts.dir)) {
         runWorkspaceCallers(resolve(dir), globalOpts.dir, symbol, {
           direction: opts.direction === "out" ? "out" : "in",
-          depth: opts.depth ? Number(opts.depth) : undefined,
+          depth: opts.depth
+            ? (/^(all|full|max)$/i.test(opts.depth) ? Number.POSITIVE_INFINITY : Number(opts.depth))
+            : undefined,
           in: opts.in,
         });
         return;

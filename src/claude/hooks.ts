@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, relevantRetrieval, formatOrientation } from './format.js';
+import { indexFreshness, staleBanner } from '../context/check.js';
 import { patchStats, readStats, acquireLock, readSession, writeSession } from './state.js';
 import { graftCliPath, claudeScriptPath } from './paths.js';
 import { scopeOf, scopesOfGraph } from '../graph/scopes.js';
@@ -145,7 +146,8 @@ export async function main(event: string): Promise<void> {
   if (event === 'session-start') {
     try {
       const idx = readFileSync(join(dir, 'graft', 'INDEX.md'), 'utf8');
-      emit('SessionStart', formatOrientation(idx));
+      const banner = staleBanner(indexFreshness(dir)) ?? undefined;
+      emit('SessionStart', formatOrientation(idx, undefined, banner));
     } catch { /* no INDEX.md — skip */ }
     return;
   }

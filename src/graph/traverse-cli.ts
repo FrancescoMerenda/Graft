@@ -68,7 +68,7 @@ export function callersSavings(
 export function looseNoteFor(direction: Direction, name: string): string {
   const label = direction === "out" ? "callees" : "callers";
   const dir = direction === "out" ? "outgoing" : "incoming";
-  return `  no indexed ${label} — the graph has no ${dir} call/reference edges for this symbol; try grep -rn "${name}"`;
+  return `  no indexed ${label} — the graph has no ${dir} call/reference edges for this symbol as written. Check the name (try the bare symbol, or "Type.method"), or find its uses with graft grep "${name}". Fall back to raw grep -rn only for unindexed files`;
 }
 
 interface SymbolJson {
@@ -142,12 +142,21 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   const direction = resolveDirection(opts.direction);
   let depth = DEFAULT_DEPTH;
   if (opts.depth !== undefined) {
-    const d = Number(opts.depth);
-    if (!Number.isFinite(d) || d < 1) {
-      console.error(`✗ --depth must be a positive number, got "${opts.depth}"`);
-      process.exit(1);
+    // `all` (aka full/max) = the whole transitive closure: walk until no new
+    // node is reached. The BFS's visited-set makes this cycle-safe, and it
+    // terminates when the frontier empties. This is the "show me every
+    // connected source" mode — the right first move before a multi-file
+    // refactor, where stopping at direct edges misses sibling/downstream files.
+    if (/^(all|full|max)$/i.test(opts.depth)) {
+      depth = Number.POSITIVE_INFINITY;
+    } else {
+      const d = Number(opts.depth);
+      if (!Number.isFinite(d) || d < 1) {
+        console.error(`✗ --depth must be a positive number or "all", got "${opts.depth}"`);
+        process.exit(1);
+      }
+      depth = Math.floor(d);
     }
-    depth = Math.floor(d);
   }
   const showDepth = depth > 1;
 

@@ -165,7 +165,7 @@ test('graft_callers direction:out round-trips a callee, and reports a loud note 
   const empty = callTool(d, 'graft_callers', { symbol: 'add', direction: 'out' });
   assert.equal(empty.isError, false);
   assert.match(empty.text, /no indexed callees/);
-  assert.match(empty.text, /grep -rn "add"/);
+  assert.match(empty.text, /graft grep "add"/);
 });
 
 test('graft_callers: unknown symbol / missing symbol are soft isErrors', () => {
@@ -227,7 +227,7 @@ test('graft_grep: no hits is a soft (non-error) result with the loud fallback no
   const r = callTool(d, 'graft_grep', { pattern: 'noSuchPatternAnywhere' });
   assert.equal(r.isError, false);
   assert.match(r.text, /no hits for "noSuchPatternAnywhere"/);
-  assert.match(r.text, /grep -rn "noSuchPatternAnywhere"/);
+  assert.match(r.text, /retry graft grep/);
 });
 
 test('graft_grep: missing pattern and unbuilt repo are soft errors', () => {

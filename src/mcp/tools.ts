@@ -78,7 +78,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'graft_callers',
     description:
-      'Structural edges for a symbol, over call/reference/import/implements/extends ($0, no LLM). Defaults to direct callers (who depends on it). Set direction:"out" for callees (what it calls); set depth>1 to walk transitively for the full blast radius — who breaks if it changes.',
+      'Structural edges for a symbol, over call/reference/import/implements/extends ($0, no LLM). Defaults to direct callers (who depends on it). Set direction:"out" for callees (what it calls); set depth>1 (or depth:"all" for the full closure) to walk transitively for the full blast radius — every source that breaks if it changes. Run before a multi-file refactor to find ALL affected files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -88,7 +88,7 @@ export const TOOLS: ToolDef[] = [
           enum: ['in', 'out'],
           description: '"in" (default) = callers/dependents; "out" = callees/dependencies',
         },
-        depth: { type: 'number', description: 'transitive walk depth for blast radius (default 1 = direct edges only)' },
+        depth: { description: 'transitive walk depth for blast radius (default 1 = direct edges only); pass "all" for the full connected closure — every source that would be affected' },
         in: { type: 'string', description: 'narrow matches to nodes whose path contains this substring' },
       },
       required: ['symbol'],
@@ -245,10 +245,14 @@ export function callTool(
         const matches = resolveSymbol(w, symbol, inOpt);
         if (matches.length === 0) return { text: unknownSymbolText(symbol), isError: true };
         const direction: Direction = args.direction === 'out' ? 'out' : 'in';
+        // `depth: "all"` (or a huge number) walks the full transitive closure —
+        // every connected source — terminating when no new node is reached.
         const depth =
-          typeof args.depth === 'number' && Number.isFinite(args.depth) && args.depth >= 1
-            ? Math.floor(args.depth)
-            : 1;
+          args.depth === 'all' || args.depth === 'full'
+            ? Number.POSITIVE_INFINITY
+            : typeof args.depth === 'number' && Number.isFinite(args.depth) && args.depth >= 1
+              ? Math.floor(args.depth)
+              : 1;
         const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(w, m, direction, depth) }));
         const byId = new Map(results.map((r) => [r.symbol.id, r.hits]));
         const body = renderMatches(direction, depth > 1, matches, (m) => byId.get(m.id) ?? []);

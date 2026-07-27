@@ -131,12 +131,24 @@ test('formatOrientation labels and truncates to budget', () => {
   const out = strip(formatOrientation(md, 1500));
   assert.match(out, /repo map/);
   assert.match(out, /reach for graft first/, 'always-on usage directive present');
+  assert.match(out, /Already know the file or symbol to change\?/, 'known-target edit guidance present');
   // index truncated to budget (1500) + the fixed usage directive (per-tool descriptions + discipline).
-  assert.ok(out.length < 3200, 'index trimmed to budget; only the fixed directive adds to it');
+  assert.match(out, /Refactor, rename, or multi-file change?/, 'refactor blast-radius nudge present');
+  assert.ok(out.length < 3700, 'index trimmed to budget; only the fixed directive adds to it');
   // Regression: `graft impact` was folded into `graft callers --depth` in 0.6.0 —
   // the always-on directive must teach the current command, not a dead one.
   assert.doesNotMatch(out, /graft impact\b/, 'does not teach the removed `graft impact` command');
   assert.match(out, /graft callers .*--depth/, 'teaches blast radius via callers --depth instead');
+});
+
+test('formatOrientation prepends a staleness banner when one is supplied', () => {
+  const md = 'repo index';
+  const note = '⚠ graft index may be ahead of your working tree: 3 of 40 indexed files are not on disk';
+  const out = strip(formatOrientation(md, 1500, note));
+  // banner rides ABOVE the directive so it is the first thing the agent reads.
+  assert.ok(out.indexOf('ahead of your working tree') < out.indexOf('reach for graft first'), 'banner precedes the directive');
+  // absent by default (fresh index) — no banner noise when nothing supplied.
+  assert.doesNotMatch(strip(formatOrientation(md, 1500)), /ahead of your working tree/);
 });
 
 test('renderSubagent shows agent name and its last query', () => {

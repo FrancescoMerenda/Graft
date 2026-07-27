@@ -70,7 +70,7 @@ export function formatGrepResult(result: GrepResult): string {
  * otherwise a zero-hit result on a stale graph or wrong root reads as "no
  * matches" when really some files were never searched at all. */
 export function zeroHitNote(result: GrepResult): string {
-  const base = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files — unindexed files (docs, configs, new files) aren't searched; try grep -rn "${result.pattern}" for those`;
+  const base = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files. The pattern may be too specific — retry graft grep with a bare symbol name or short substring (drop the receiver, full signature, and regex anchors). All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
   const { files } = result.truncated;
   if (files === 0) return base;
   return `${base} — note: ${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run graft build)`;

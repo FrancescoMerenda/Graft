@@ -106,6 +106,47 @@ export function checkContext(dir: string, opts: CheckOptions = {}): CheckResult 
   return result;
 }
 
+/** A cheap, query-time staleness signal (unlike {@link checkContext}, which
+ * re-hashes every file for CI). */
+export interface FreshnessResult {
+  /** Recorded source files that are no longer on disk. */
+  missing: number;
+  /** Total source files the manifest recorded. */
+  total: number;
+}
+
+/**
+ * How many recorded source files have vanished from disk — an existence-only
+ * check (stat, never a read or a hash), safe to call on a hot path like session
+ * start. This catches the common "index built on a different tree" case: a
+ * branch switch, a `git checkout` to an older commit, an unpulled move — states
+ * where graft would otherwise confidently point at files that aren't there and
+ * send the agent chasing them. Returns null when there's no graph at all.
+ */
+export function indexFreshness(dir: string, opts: CheckOptions = {}): FreshnessResult | null {
+  const root = resolve(dir);
+  const outDir = contextDirFor(root, opts.contextDir);
+  const manifest = readManifest(outDir);
+  if (!manifest) return null;
+  let missing = 0;
+  for (const ref of manifest.files) {
+    if (!existsSync(resolve(root, ref.path))) missing++;
+  }
+  return { missing, total: manifest.files.length };
+}
+
+/** One-line staleness banner for orientation/query output, or null when the
+ * index is fresh (or absent). Terse on purpose — it rides atop the orientation
+ * the agent reads first, so it must earn its tokens. */
+export function staleBanner(f: FreshnessResult | null): string | null {
+  if (!f || f.missing === 0) return null;
+  return (
+    `⚠ graft's index may be ahead of your working tree: ${f.missing} of ${f.total} indexed ` +
+    `files are not on disk (branch switch or uncommitted move?). If graft names a path that ` +
+    `isn't there, don't chase it — \`graft grep\` the symbol to find where it lives now; run \`graft build\` to refresh.`
+  );
+}
+
 /** Render a check result as a human-readable report. */
 export function formatCheckReport(r: CheckResult): string {
   if (r.missing) {

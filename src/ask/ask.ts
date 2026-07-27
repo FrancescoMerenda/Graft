@@ -134,6 +134,17 @@ function loadCorpus(outDir: string): Corpus {
  * far less than a rare, discriminating identifier ("scrolling"). Without idf,
  * pure term-frequency lets an incidental common word dominate the ranking; this
  * is the lexical half of the keyword-collision fix (graph-rank is the other). */
+/** Test files rarely answer "how does X work" / "where is Y" — they mirror the
+ * real symbol's tokens, so a test can out-score the definition on a lexical tie
+ * and land as the top hit (observed: an `ask` returning a `Test…` function first,
+ * sending the agent to the wrong file). A multiplicative de-rank keeps tests in
+ * the results (they still matter for "where are the tests") but below the real
+ * definition. Covers Go (`_test.go`), JS/TS (`.test.` / `.spec.`), and test dirs. */
+export function isTestPath(path: string): boolean {
+  return /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$/i.test(path || "");
+}
+const TEST_RANK_PENALTY = 0.35;
+
 function score(
   query: Map<string, number>,
   doc: Map<string, number>,
@@ -253,7 +264,7 @@ type StructuralOutcome = { result: AskResult } | { fallthroughNote: string } | n
 function fallthroughNoteFor(subject: string): string {
   return (
     `structural index: no entries for '${subject}' — showing lexical matches; ` +
-    `for exhaustive callers use grep -rn '${subject}'`
+    `for precise edges try graft callers '${subject}', or graft grep '${subject}' for every reference (loosen the pattern if it returns nothing)`
   );
 }
 
@@ -377,6 +388,14 @@ function lexical(query: string, corpus: Corpus, limit: number, graphRank: boolea
   // ranty description can't linearly amplify an incidental word.
   const q = new Map([...counts(tokenize(query)).keys()].map((t) => [t, 1]));
   const graph = corpus.graph;
+
+  // Test-file de-ranking is query-aware: a query that ASKS about tests wants test
+  // files on top, so it gets no penalty; every other query wants the real
+  // definition first. This stops a test that merely contains the query's literals
+  // (e.g. `TestDownloadStall` matching "download stall") from outranking the
+  // source it exercises — the "tests ranked above the actual code" trap.
+  const wantsTests = /\b(tests?|specs?|coverage|assert(?:ion)?s?|fixtures?|mocks?)\b/i.test(query);
+  const testFactor = (path: string): number => (!wantsTests && isTestPath(path) ? TEST_RANK_PENALTY : 1);
 
   // ── Pass 1: tokenize every scored field once, and collect per-document token
   // bags so IDF can down-weight words that occur across the whole corpus. `--in`
@@ -536,9 +555,10 @@ function lexical(query: string, corpus: Corpus, limit: number, graphRank: boolea
           const out = new Map<string, number>();
           for (const { n, name, path, body } of docs) {
             const total =
-              score(q, name, sIdf) * 3 +
-              score(q, path, sIdf) * 2 +
-              bm25(q, body, sIdf, bodyLen(body), avg);
+              (score(q, name, sIdf) * 3 +
+                score(q, path, sIdf) * 2 +
+                bm25(q, body, sIdf, bodyLen(body), avg)) *
+              testFactor(n.path);
             if (total > 0) out.set(n.id, total);
           }
           return out;
@@ -609,9 +629,10 @@ function lexical(query: string, corpus: Corpus, limit: number, graphRank: boolea
     // Name and path are short identifiers → plain idf-weighted overlap; the body
     // is length-normalized via BM25 so long definitions don't win on bulk.
     const total =
-      score(q, name, idf) * 3 +
-      score(q, path, idf) * 2 +
-      bm25(q, body, idf, bodyLen(body), avgBodyLen);
+      (score(q, name, idf) * 3 +
+        score(q, path, idf) * 2 +
+        bm25(q, body, idf, bodyLen(body), avgBodyLen)) *
+      testFactor(n.path);
     if (total > 0) {
       lex.set(n.id, total);
       maxLex = Math.max(maxLex, total);

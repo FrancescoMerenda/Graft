@@ -12,7 +12,46 @@ import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildGraph } from "../src/graph/build.js";
-import { ask, formatAsk, skeleton, formatSkeleton } from "../src/ask/ask.js";
+import { ask, formatAsk, skeleton, formatSkeleton, isTestPath } from "../src/ask/ask.js";
+
+test("isTestPath: de-ranks test files, not real source", () => {
+  for (const p of ["server/download_test.go", "packages/x/tests/foo.test.tsx", "a/__tests__/b.ts", "src/api.spec.ts", "pkg/foo/bar_test.go"])
+    assert.ok(isTestPath(p), `${p} should be a test path`);
+  for (const p of ["server/download.go", "packages/element/src/selection.ts", "src/api.ts", "cmd/root.go"])
+    assert.ok(!isTestPath(p), `${p} should NOT be a test path`);
+});
+
+test("test files rank below the source they exercise for a non-test query, but not for a test-seeking one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-ask-testrank-"));
+  try {
+    writeFileSync(
+      join(dir, "download.ts"),
+      `export function downloadChunk(url: string): string {\n` +
+        `  // stall detection before the first byte arrives\n` +
+        `  return url;\n` +
+        `}\n`,
+    );
+    writeFileSync(
+      join(dir, "download.test.ts"),
+      `import { downloadChunk } from "./download";\n` +
+        `// stall detection test exercising downloadChunk before first byte\n` +
+        `export function testDownloadChunkStall(): void { downloadChunk("x"); }\n`,
+    );
+    await buildGraph(dir);
+    // Non-test query: the real source must outrank its mirror test file, even
+    // though the test contains the same literals ("download", "stall", "detection").
+    const r = ask(dir, "download chunk stall detection first byte");
+    const src = r.hits.findIndex((h) => /(^|\/)download\.ts(:|$)/.test(h.pointer));
+    const tst = r.hits.findIndex((h) => /download\.test\.ts/.test(h.pointer));
+    assert.ok(src >= 0, "source hit present");
+    assert.ok(tst === -1 || src < tst, "source ranks above its test for a non-test query");
+    // Test-seeking query: the penalty lifts, so the test file surfaces.
+    const rt = ask(dir, "tests for downloadChunk stall");
+    assert.ok(rt.hits.some((h) => /download\.test\.ts/.test(h.pointer)), "test file surfaces for a test-seeking query");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function makeFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), "graft-ask-"));
@@ -231,7 +270,7 @@ test("ask: structural subject resolves but has zero edges — falls through to l
     assert.equal(r.mode, "lexical", "never a bare empty structural result");
     assert.ok(r.note, "a fallthrough note must be set");
     assert.match(r.note!, /structural index: no entries for 'unusedHelper'/);
-    assert.match(r.note!, /grep -rn 'unusedHelper'/);
+    assert.match(r.note!, /graft callers 'unusedHelper'/);
     assert.ok(r.hits.length > 0, "lexical fallback still finds the function by name");
   } finally {
     rmSync(dir, { recursive: true, force: true });

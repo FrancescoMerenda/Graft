@@ -92,7 +92,7 @@ test('graft callers --direction out: zero-edge symbol prints a loud callees note
   assert.equal(r.status, 0);
   assert.match(r.stdout, /add · function · src\/math\.ts:/);
   assert.match(r.stdout, /no indexed callees/);
-  assert.match(r.stdout, /grep -rn "add"/);
+  assert.match(r.stdout, /graft grep "add"/);
 });
 
 test('graft callers --direction out --json: zero-edge symbol includes a note field', () => {
@@ -106,7 +106,7 @@ test('graft callers --direction out --json: zero-edge symbol includes a note fie
   assert.equal(m.symbol.name, 'add');
   assert.equal(m.hits.length, 0);
   assert.ok(m.note, 'zero-edge match must have a note field');
-  assert.match(m.note, /try grep -rn/);
+  assert.match(m.note, /graft grep "add"/);
 });
 
 test('graft callers --depth: depth flag walks the BFS transitively (blast radius)', () => {
@@ -125,6 +125,25 @@ test('graft callers --depth: depth flag walks the BFS transitively (blast radius
   assert.match(deeper.stdout, /\[depth 1\]/);
   assert.match(deeper.stdout, /← compute \(/);
   assert.match(deeper.stdout, /\[depth 2\]/);
+});
+
+test('graft callers --depth all: walks the entire connected closure', () => {
+  const d = builtRepo();
+  // compute -> sub -> add. `all` must reach BOTH hops (the full closure),
+  // like an unbounded depth, terminating when no new node is found.
+  const all = runCli(['callers', 'add', d, '--depth', 'all']);
+  assert.equal(all.status, 0);
+  assert.match(all.stdout, /← sub \(/);
+  assert.match(all.stdout, /\[depth 1\]/);
+  assert.match(all.stdout, /← compute \(/);
+  assert.match(all.stdout, /\[depth 2\]/);
+});
+
+test('graft callers --depth: rejects a non-numeric, non-"all" value with exit 1', () => {
+  const d = builtRepo();
+  const r = runCli(['callers', 'add', d, '--depth', 'banana']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /--depth must be a positive number or "all"/);
 });
 
 test('graft callers --direction: rejects a bad value with exit 1', () => {

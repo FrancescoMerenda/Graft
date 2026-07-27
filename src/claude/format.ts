@@ -154,7 +154,7 @@ export function relevantRetrieval(ask: AskJson, s: SessionState, cap = 3): strin
   return txt;
 }
 
-export function formatOrientation(indexMd: string, budgetBytes = 1500): string {
+export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote?: string): string {
   // Always-on directive (cached, seen turn 0) so the agent reaches for graft's
   // commands without waiting for the discretionary skill to load. This is the
   // reliable steering channel (fires every session, unlike the discretionary
@@ -166,11 +166,14 @@ export function formatOrientation(indexMd: string, budgetBytes = 1500): string {
     `  • graft ask "<task>" --source: locate + understand. Ranked nodes with the code inlined at each file:line (the ≤8-line crux; add --full for the whole span). The default for "how does X work" / "where is Y".\n` +
     `  • graft grep "<literal>": exhaustive find. Every occurrence, grouped by enclosing symbol; use when you need them ALL (ask is ranked top-N and misses instances).\n` +
     `  • graft skeleton <file>: a file's whole API in ~200 tokens, every signature + span, ~10x cheaper than reading the file.\n` +
-    `  • graft callers <sym> [--direction out] [--depth N]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2). Run before you change a symbol.\n` +
+    `  • graft callers <sym> [--direction out] [--depth N|all]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2, or --depth all for every connected source). Run before you change a symbol.\n` +
     `  • graft map: orientation for an unfamiliar repo, directory clusters, hubs, hotspots. map alone is the answer; don't then skeleton every subsystem it names.\n` +
     `  In a monorepo, add --in <path>/ to ask/grep/callers to scope to one sub-project; hits are labeled [scope/].\n` +
+    `  Already know the file or symbol to change? Go straight to it: graft grep "<symbol>", read the span, edit. Save ask for when you don't yet know where the code lives.\n` +
+    `  Refactor, rename, or multi-file change? Run graft callers <sym> --depth all FIRST to map every connected file; editing the primary file and stopping is the classic miss (platform siblings, a new file to extract).\n` +
     `Each tool prints a "[graft] tokens saved ≈ N" footer; when you used graft this turn, close your reply with a one-line tally of the total saved (e.g. 🌱 graft saved ~12k tokens this turn, 3 calls).\n`;
-  return `${directive}\nrepo map (graft/INDEX.md):\n${indexMd.slice(0, budgetBytes)}`;
+  const banner = staleNote ? `${staleNote}\n\n` : "";
+  return `${banner}${directive}\nrepo map (graft/INDEX.md):\n${indexMd.slice(0, budgetBytes)}`;
 }
 
 export function renderSubagent(agentName: string, session: SessionState | null): string {

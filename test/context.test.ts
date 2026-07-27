@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
-import { checkContext } from "../src/context/check.js";
+import { checkContext, indexFreshness, staleBanner } from "../src/context/check.js";
 import { contextDirFor, ensureGitignored } from "../src/context/node-file.js";
 import { fakeProviders } from "./helpers.js";
 
@@ -109,6 +109,36 @@ test("check detects content drift when a source file changes", async () => {
     assert.equal(r.ok, false);
     assert.equal(r.contentDrift.length, 1);
     assert.equal(r.contentDrift[0].path, "auth.ts");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("indexFreshness/staleBanner: recorded files gone from disk (the branch-switch / stale-index case)", async () => {
+  const dir = makeFixture();
+  try {
+    await buildContext(dir, buildOpts());
+    // Fresh right after build: nothing missing, no banner.
+    const fresh = indexFreshness(dir);
+    assert.ok(fresh && fresh.missing === 0, "fresh index reports zero missing");
+    assert.equal(staleBanner(fresh), null, "no banner when fresh");
+    // Simulate a checkout to a tree where a recorded file doesn't exist.
+    rmSync(join(dir, "auth.ts"), { force: true });
+    const stale = indexFreshness(dir);
+    assert.ok(stale && stale.missing >= 1, "missing count rises when a recorded file vanishes");
+    const banner = staleBanner(stale);
+    assert.match(banner ?? "", /ahead of your working tree/, "banner fires when stale");
+    assert.match(banner ?? "", /graft grep/, "banner steers to graft grep, not raw grep");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("indexFreshness returns null when there is no graph", () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-fresh-nograph-"));
+  try {
+    assert.equal(indexFreshness(dir), null);
+    assert.equal(staleBanner(null), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
