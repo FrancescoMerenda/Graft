@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+### Fixed
+
+- **`graft ask` no longer buries source under test files on pytest-style repos.** The
+  test-de-rank (`isTestPath`) matched test directories (`tests/`, `spec/`) and suffix
+  names (`_test`, `.test`, `.spec`) but missed Python's dominant `test_*.py` filename
+  **prefix** and `conftest.py`. On repos whose tests live outside a `tests/`-named
+  directory (e.g. a `t/unit/` layout), tests were not de-ranked and swamped `ask`
+  results. The prefix and `conftest.py` are now recognized.
+
 ## 0.8.1
 
 ### Changed
