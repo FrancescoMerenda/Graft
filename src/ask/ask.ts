@@ -141,7 +141,7 @@ function loadCorpus(outDir: string): Corpus {
  * the results (they still matter for "where are the tests") but below the real
  * definition. Covers Go (`_test.go`), JS/TS (`.test.` / `.spec.`), and test dirs. */
 export function isTestPath(path: string): boolean {
-  return /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$/i.test(path || "");
+  return /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$|(^|\/)(test_[^/]+|conftest)\.py$/i.test(path || "");
 }
 const TEST_RANK_PENALTY = 0.35;
 

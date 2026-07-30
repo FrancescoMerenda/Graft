@@ -21,6 +21,22 @@ test("isTestPath: de-ranks test files, not real source", () => {
     assert.ok(!isTestPath(p), `${p} should NOT be a test path`);
 });
 
+test("isTestPath: recognizes pytest's test_*.py prefix and conftest, even outside a tests/ dir", () => {
+  // pytest's dominant convention is the FILENAME prefix test_*.py — and repos put
+  // these outside a tests/-named dir (kombu uses t/unit/). Missing these swamps
+  // `ask` with test methods on well-tested Python repos.
+  for (const p of [
+    "t/unit/transport/test_qpid.py",   // kombu layout
+    "t/unit/test_messaging.py",
+    "test_foo.py",                     // bare pytest file
+    "src/pkg/test_utils.py",           // pytest file beside source
+    "conftest.py", "a/b/conftest.py",  // pytest fixtures file
+  ]) assert.ok(isTestPath(p), `${p} should be a test path`);
+  // must NOT over-match ordinary source that merely contains "test"
+  for (const p of ["src/contest.py", "src/latest_value.py", "pkg/attestation.py"])
+    assert.ok(!isTestPath(p), `${p} should NOT be a test path`);
+});
+
 test("test files rank below the source they exercise for a non-test query, but not for a test-seeking one", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-ask-testrank-"));
   try {
