@@ -34,6 +34,19 @@ function makeNode(overrides: Partial<NodeV1> = {}): NodeV1 {
   };
 }
 
+// ── PERMANENT gate: every graph this file builds must have unique node ids ──
+//
+// Mint-time id collisions used to be silent — a duplicate definition's node
+// simply overwrote the first's in every id-keyed lookup (see extract.ts's
+// mint-time uniqueness comment). Checked against every fixture this file
+// builds — hand-built (writeGraph) AND real (buildGraph) alike — as a
+// standing regression gate. A hand-built fixture that trips this has a bug in
+// the fixture, not a false positive: the invariant IS the point.
+function assertUniqueIds(nodes: NodeV1[]): void {
+  const ids = nodes.map((n) => n.id);
+  assert.equal(new Set(ids).size, ids.length, `node ids must be unique, got ${JSON.stringify(ids)}`);
+}
+
 test("writeGraph strips body_text from the serialized node but keeps every other field", () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-write-"));
   try {
@@ -56,6 +69,7 @@ test("writeGraph strips body_text from the serialized node but keeps every other
 
     const reread = readGraph(path);
     assert.equal(reread!.nodes[0].body_text, undefined);
+    assertUniqueIds(graph.nodes);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -73,6 +87,7 @@ test("writeGraph does not mutate the in-memory node — build.ts's sidecar pass 
     writeGraph(graph, dir);
     assert.equal(node.body_text, "untouched body text", "original node object must be unchanged");
     assert.equal(graph.nodes[0].body_text, "untouched body text", "graph.nodes must still reference the live object");
+    assertUniqueIds(graph.nodes);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -91,6 +106,7 @@ test("a node with no body_text (e.g. a file node) round-trips unchanged", () => 
     const raw = JSON.parse(readFileSync(path, "utf8"));
     assert.ok(!("body_text" in raw.nodes[0]));
     assert.equal(raw.nodes[0].kind, "file");
+    assertUniqueIds(graph.nodes);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -126,16 +142,6 @@ test("buildGraph: the serialized wiring.json has no body_text key on ANY node", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-// ── A3 PERMANENT gate: every graph this file builds must have unique node ids ──
-
-/** Mint-time id collisions used to be silent — a duplicate definition's node
- * simply overwrote the first's in every id-keyed lookup. This is checked
- * against every fixture this file builds, as a standing regression gate. */
-function assertUniqueIds(nodes: NodeV1[]): void {
-  const ids = nodes.map((n) => n.id);
-  assert.equal(new Set(ids).size, ids.length, `node ids must be unique, got ${JSON.stringify(ids)}`);
-}
 
 test("A3 PERMANENT gate: duplicate-named definitions still produce unique node ids in the written wiring.json", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-write-dup-"));
