@@ -121,6 +121,36 @@ test("buildGraph: the serialized wiring.json has no body_text key on ANY node", 
     for (const n of parsed.nodes) {
       assert.ok(!("body_text" in n), `node ${n.id} must not carry body_text in the serialized graph`);
     }
+    assertUniqueIds(parsed.nodes);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── A3 PERMANENT gate: every graph this file builds must have unique node ids ──
+
+/** Mint-time id collisions used to be silent — a duplicate definition's node
+ * simply overwrote the first's in every id-keyed lookup. This is checked
+ * against every fixture this file builds, as a standing regression gate. */
+function assertUniqueIds(nodes: NodeV1[]): void {
+  const ids = nodes.map((n) => n.id);
+  assert.equal(new Set(ids).size, ids.length, `node ids must be unique, got ${JSON.stringify(ids)}`);
+}
+
+test("A3 PERMANENT gate: duplicate-named definitions still produce unique node ids in the written wiring.json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-write-dup-"));
+  try {
+    writeFileSync(
+      join(dir, "dup.ts"),
+      "export function helper(): void {}\n\nexport function helper(): void {}\n",
+    );
+    await buildGraph(dir);
+    const outDir = contextDirFor(dir);
+    const graph = readGraph(wiringPath(outDir));
+    assert.ok(graph);
+    assertUniqueIds(graph!.nodes);
+    const ids = graph!.nodes.map((n) => n.id);
+    assert.ok(ids.includes("dup.ts#helper") && ids.includes("dup.ts#helper~2"), "sanity: the dup actually minted an ordinal id");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
