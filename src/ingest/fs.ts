@@ -22,6 +22,22 @@ export const SKIP_DIRS = new Set([
 export const MAX_FILE_BYTES = 1_000_000;
 
 /**
+ * Whether a directory named `name` should be skipped when walking a repo tree:
+ * any dot-prefixed directory (`.git`, `.github`, `.vscode`, ...) or one of
+ * {@link SKIP_DIRS}. The single source of truth for "is this dir source" —
+ * `skippedPath` and `walkFilesystem` below and the git-child discovery in
+ * `graph/scopes.ts` share it, so they can never independently drift on what
+ * counts as skippable.
+ *
+ * KNOWN LIMITATION: a dot-directory is skipped WHOLESALE — there is no
+ * override for a dot-prefixed directory. A repo that keeps real,
+ * hand-written source under one is out of scope.
+ */
+export function shouldSkipDir(name: string): boolean {
+  return name.startsWith(".") || SKIP_DIRS.has(name);
+}
+
+/**
  * Recursively list all files under a directory. Skips dot-directories,
  * dependency/build directories (node_modules, dist, …), and files over 1 MB.
  * In a Git worktree, tracked files plus untracked, non-ignored files come from
@@ -67,20 +83,22 @@ function gitVisibleFiles(dir: string): string[] | null {
   return out;
 }
 
+/** A path (git-relative, either separator) is skipped when any of its
+ * segments is a skippable directory name — the final segment doubles as the
+ * dot-FILE check (`.eslintrc.js` and friends are not source either). */
 function skippedPath(path: string): boolean {
-  const segments = path.replace(/\\/g, "/").split("/");
-  return segments.some((segment) => segment.startsWith(".") || SKIP_DIRS.has(segment));
+  return path.replace(/\\/g, "/").split("/").some(shouldSkipDir);
 }
 
 function walkFilesystem(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (shouldSkipDir(entry.name)) continue;
       out.push(...walkFilesystem(full));
     } else if (entry.isFile()) {
+      if (entry.name.startsWith(".")) continue; // dot-files are not source either
       try {
         if (statSync(full).size > MAX_FILE_BYTES) continue;
       } catch {

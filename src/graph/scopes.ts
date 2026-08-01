@@ -23,7 +23,7 @@
  */
 import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join, resolve } from "node:path";
-import { SKIP_DIRS, walkDir } from "../ingest/fs.js";
+import { shouldSkipDir, walkDir } from "../ingest/fs.js";
 import { relPosix } from "../util/paths.js";
 import type { GraphV1, ScopeV1 } from "./types.js";
 
@@ -327,13 +327,7 @@ export function discoverWorkspaceChildren(root: string): string[] {
     return [];
   }
   return entries
-    .filter(
-      (e) =>
-        e.isDirectory() &&
-        !e.name.startsWith(".") &&
-        !SKIP_DIRS.has(e.name) &&
-        existsSync(join(absRoot, e.name, ".git")),
-    )
+    .filter((e) => e.isDirectory() && !shouldSkipDir(e.name) && existsSync(join(absRoot, e.name, ".git")))
     .map((e) => e.name);
 }
 
