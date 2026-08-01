@@ -256,6 +256,14 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
     // `name` stays the bare symbol name so member-call resolution matches it.
     const idPart = desc.idName ?? desc.name;
     const id = `${ctx.rel}#${[...ctx.scope, idPart].join(".")}`;
+    const isGoMethod = ctx.lang === "go" && node.type === "method_declaration";
+    // The bare name of this node's OWN immediate enclosing class/receiver — for a
+    // Go method that's its receiver type (methods aren't nested, so ctx.enclosingClass
+    // wouldn't see it); for every other method it's simply what the nearest ancestor
+    // class already set as ctx.enclosingClass. Only method nodes carry it — resolve.ts's
+    // ownerMethod index is the sole consumer (see NodeV1.owner's doc comment).
+    const owner: string | undefined =
+      desc.kind === "method" ? (isGoMethod ? (goReceiverType(node) ?? undefined) : (ctx.enclosingClass ?? undefined)) : undefined;
     out.push({
       id,
       name: desc.name,
@@ -275,13 +283,13 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       summary_state: "pending",
       summary: null,
       crux: null,
+      ...(owner !== undefined ? { owner } : {}),
     });
     // structural containment
     edges.push({ source: ctx.parentId, relation: "contains", targetId: id, file: ctx.rel });
     // class heritage
     if (desc.kind === "class") edges.push(...heritageEdges(node, id, ctx));
 
-    const isGoMethod = ctx.lang === "go" && node.type === "method_declaration";
     const enclosingClass = desc.kind === "class" ? desc.name : isGoMethod ? goReceiverType(node) : ctx.enclosingClass;
     const childCtx: WalkCtx = {
       ...ctx,
