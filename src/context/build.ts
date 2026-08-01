@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
+import { readSourceFile } from "../util/source.js";
 import type { Summarizer } from "../ai/summarize.js";
 import type { FileSummary, SynthNode, Synthesizer } from "../ai/synthesize.js";
 import {
@@ -123,7 +124,9 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
     opts.onProgress?.({ phase: "summarize", index: i, total: files.length, file: rel });
     let code: string;
     try {
-      code = readFileSync(file, "utf8");
+      const decoded = readSourceFile(file);
+      if (decoded === null) return undefined; // unsupported encoding (e.g. UTF-16BE) — skip, not an error
+      code = decoded;
     } catch (err) {
       result.errors.push(`${rel}: ${errMsg(err)}`);
       return undefined;
