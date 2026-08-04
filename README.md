@@ -22,9 +22,9 @@
 | Tool calls | **46% fewer** |
 | Tokens | **42% fewer** |
 | Time | **60% less** |
-| Correctness | **equal** |
+| Correctness | **+50% on SWE-bench** |
 
-<sub>The table is a 162-run controlled benchmark (same agent, same file tools, only the context differs). The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Full method & per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 6 / 8 against a standard session's 4 / 8. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -39,6 +39,8 @@
 - [Quick start](#quick-start)
 - [The problem](#the-problem)
 - [What Graft does](#what-graft-does)
+- [Benchmark](#benchmark)
+- [SWE-bench Verified](#swe-bench-verified)
 - [How the graph gets built](#how-the-graph-gets-built)
 - [What's in a node](#whats-in-a-node)
 - [What runs where](#what-runs-where)
@@ -47,7 +49,6 @@
 - [Search & orient](#search--orient-graft-grep--graft-map) (`graft grep` / `graft map`)
 - [Monorepos & multi-repo folders](#monorepos--multi-repo-folders)
 - [Visualize it](#visualize-it-graft-viz) (`graft viz`)
-- [Benchmark](#benchmark)
 - [Tested on your popular repos](#tested-on-your-popular-repos)
 - [Development](#development)
 - [License](#license)
@@ -100,6 +101,49 @@ Graft builds that understanding **once** and writes it into your repo as a folde
 - **Grafted into git.** The graph is just files in `graft/`. Commit it, and anyone who clones the repo has it. No database, no server, no setup. Git does the syncing, and a stale graph shows up as a diff in review instead of rotting in some external store.
 - **The diff lives with the code.** When a change moves things around, you see it in the graph diff in the same pull request, right next to the code that caused it.
 - **Your provider, your key, your model.** Summaries are written by any provider you choose — OpenAI, Anthropic (native), OpenRouter, Fireworks, Groq, a LiteLLM proxy, or a local model — under your own key. The structural code graph (`graft build`, `graft check`) is deterministic tree-sitter and never calls a model at all.
+
+---
+
+## Benchmark
+
+An agent that reads the graph should be cheaper and faster without getting more answers wrong. That's the whole claim, so we measured it instead of asserting it.
+
+The harness ran three variants of the same Claude Sonnet 5 agent with the same file tools: **cold** (explores from zero), **Graft** (a `graft ask --source` bundle pushed up front), and **pull** (graft_find_code/graft_file_api tools, nothing injected — context paid for only when asked). An Opus 4.8 judge scored correctness with a required-keyword floor, so a fast-but-wrong answer couldn't win by being fast. Cost is cache-aware: reads ≈0.1×, writes 1.25×, the billing model agents actually run under.
+
+162 runs, two repos (graft itself and a real Node/Express auth service), 3 trials each, tasks split between single-file and multi-file questions.
+
+| Metric (mean/task) | Cold | Graft |
+|---|---|---|
+| Cost ($) | 0.0429 | **0.0292 (−32%)** |
+| Uncached input tokens | 8,070 | **4,650 (−42%)** |
+| Tool calls | 4.2 | **2.3 (−46%)** |
+| Latency (s) | 39.8 | **15.8 (−60%)** |
+| Correctness | 93% | 93% (equal) |
+
+Graft never answered worse than cold, on any corpus. The pull variant gave up most of that speed for something bigger: correctness jumped to 98%, +5 points over cold, the strongest single result in the sweep. Push when speed is what you need; pull when being right matters more.
+
+---
+
+## SWE-bench Verified
+
+The sweep above is our harness measuring our mechanism. So we ran the industry-standard one too — **SWE-bench Verified**, real GitHub issues from real repos, graded by the official `swebench` harness. No judge model, no similarity score: your patch is applied, the maintainers' own tests are run, and you either flip the failing test without breaking the passing ones or you don't.
+
+Same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
+
+| | Standard Claude Code | With graft | |
+|---|---|---|---|
+| Correctness | 4 / 8 | **6 / 8** | **+50%** |
+| Tests passed | 766 | **786** | **+20** |
+| Tokens | 22.2M | **19.5M** | **−12%** |
+| Cost | $7.99 | **$7.17** | **−10%** |
+| Tool calls | 172 | **142** | **−17%** |
+| API requests | 311 | **267** | **−14%** |
+
+graft resolved **6 of 8** instances against a standard session's 4 — and got there with 17% fewer tool calls. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
+
+Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
+
+<sub>Correctness and tests over all instances; tokens, cost and calls over the instances both arms resolved, for a like-for-like comparison. Official SWE-bench Verified images and official `swebench` 4.1.0 grader, native x86_64.</sub>
 
 ---
 
@@ -380,29 +424,9 @@ normalized on load — no regeneration needed.
 
 ---
 
-## Benchmark
-
-An agent that reads the graph should be cheaper and faster without getting more answers wrong. That's the whole claim, so we measured it instead of asserting it.
-
-The harness ran three variants of the same Claude Sonnet 5 agent with the same file tools: **cold** (explores from zero), **Graft** (a `graft ask --source` bundle pushed up front), and **pull** (graft_find_code/graft_file_api tools, nothing injected — context paid for only when asked). An Opus 4.8 judge scored correctness with a required-keyword floor, so a fast-but-wrong answer couldn't win by being fast. Cost is cache-aware: reads ≈0.1×, writes 1.25×, the billing model agents actually run under.
-
-162 runs, two repos (graft itself and a real Node/Express auth service), 3 trials each, tasks split between single-file and multi-file questions.
-
-| Metric (mean/task) | Cold | Graft |
-|---|---|---|
-| Cost ($) | 0.0429 | **0.0292 (−32%)** |
-| Uncached input tokens | 8,070 | **4,650 (−42%)** |
-| Tool calls | 4.2 | **2.3 (−46%)** |
-| Latency (s) | 39.8 | **15.8 (−60%)** |
-| Correctness | 93% | 93% (equal) |
-
-Graft never answered worse than cold, on any corpus. The pull variant gave up most of that speed for something bigger: correctness jumped to 98%, +5 points over cold, the strongest single result in the sweep. Push when speed is what you need; pull when being right matters more.
-
----
-
 ## Tested on your popular repos
 
-The sweep above measures the mechanism. The real test is whether graft helps an agent **ship real changes** on code people actually run, not just answer questions. So we benchmark it on popular open-source repos: **15 tasks each**, 10 real developer questions plus **5 actual implementation tasks** (real merged pull requests, each re-implemented from its base commit and scored against the files the maintainers actually changed). Same agent (Claude Opus), same file tools; the only difference is whether graft is wired in.
+The [benchmarks](#benchmark) measure the mechanism. The real test is whether graft helps an agent **ship real changes** on code people actually run, not just answer questions. So we benchmark it on popular open-source repos: **15 tasks each**, 10 real developer questions plus **5 actual implementation tasks** (real merged pull requests, each re-implemented from its base commit and scored against the files the maintainers actually changed). Same agent (Claude Opus), same file tools; the only difference is whether graft is wired in.
 
 Across these repos graft runs **up to 4× cheaper and 3× faster**, with better or no loss of correctness: it reproduces the real merged PRs by touching the same files the maintainers did. Per-repo detail below.
 
