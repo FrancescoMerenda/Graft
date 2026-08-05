@@ -22,9 +22,9 @@
 | Tool calls | **46% fewer** |
 | Tokens | **42% fewer** |
 | Time | **60% less** |
-| Correctness | **+50% on SWE-bench** |
+| Correctness | **+33% on SWE-bench** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 6 / 8 against a standard session's 4 / 8. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 8 / 9 against a standard session's 6 / 9. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -132,14 +132,15 @@ Same model on both arms — **Claude Sonnet 5** — same Docker images, same tur
 
 | | Standard Claude Code | With graft | |
 |---|---|---|---|
-| Correctness | 4 / 8 | **6 / 8** | **+50%** |
-| Tests passed | 766 | **786** | **+20** |
-| Tokens | 22.2M | **19.5M** | **−12%** |
-| Cost | $7.99 | **$7.17** | **−10%** |
-| Tool calls | 172 | **142** | **−17%** |
-| API requests | 311 | **267** | **−14%** |
+| Correctness | 6 / 9 | **8 / 9** | **+33%** |
+| Tests passed | 1,260 | **1,280** | **+20** |
+| Tokens | 24.5M | **21.0M** | **−15%** |
+| Cost | $8.94 | **$7.82** | **−13%** |
+| Tool calls | 205 | **162** | **−21%** |
+| API requests | 370 | **304** | **−18%** |
+| Wall-clock | 3,251s | **1,824s** | **−44%** |
 
-graft resolved **6 of 8** instances against a standard session's 4 — and got there with 17% fewer tool calls. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
+graft resolved **8 of 9** instances against a standard session's 6 — and got there with 21% fewer tool calls, 15% fewer tokens, and 44% less wall-clock time. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
