@@ -4,6 +4,62 @@
 
 ### Fixed
 
+- **`graft map` no longer promotes unrelated methods into hubs and hotspots.**
+  A member call with an unknown receiver could be wired to the repository's
+  only method with the same bare name, so built-ins such as `Map.set()` inflated
+  an unrelated user-defined `set` method. Member calls now require an
+  owner-qualified receiver-type match; unresolved calls are dropped rather
+  than guessed ([#35]).
+
+- **Indexing now respects `.gitignore`.** In Git repositories, graft indexes
+  tracked files plus untracked files that Git does not ignore, so generated
+  output such as `Scripts/bundles/` and `Scripts/transpiled/` is no longer
+  parsed merely because its extension is supported. Nested ignore files,
+  negations, and global Git excludes follow Git's own rules; non-Git directories
+  retain the existing filesystem walk and built-in skip list ([#39]).
+
+- **`graft ask` no longer lets normalization undo test-file de-ranking.** Test
+  files were penalized before lexical scores were normalized, but the strongest
+  test match was still normalized back to the maximum score. The test prior now
+  also applies to the final lexical/graph blend, while test-seeking queries keep
+  the existing unpenalized behavior ([#37]).
+
+- **`callers` now includes imported functions used as values.** Named imports that
+  are passed, returned, or stored are reported as weaker `references` edges,
+  while direct invocations remain `calls` ([#34]).
+
+- **The build banner and repo map now name the language, not its parser.** JavaScript
+  files (`.js`, `.mjs`, `.cjs`) use the TypeScript grammar internally, and `.jsx`
+  uses the TSX grammar, but reporting those parser names made indexed files look
+  absent. Coverage now reports `javascript` and `jsx` alongside the existing
+  `typescript`, `tsx`, `python`, and `go` labels ([#36]).
+
+- **README: `init` does not write a `CLAUDE.md` section.** Claude Code receives the
+  wholly-owned `.claude/skills/graft/SKILL.md`; existing `CLAUDE.md` content is
+  never touched ([#36]).
+
+- **Windows: `graft upgrade` no longer reinstalls over an npx run.** The npx-cache check
+  matched `/_npx/` against a path that arrives with the platform separator, so it was
+  always false on Windows and `graft upgrade` ran `npm install -g` instead of explaining
+  that npx already fetches the latest build on every run.
+
+- **Windows: a git worktree kept the graph it was seeded with, but not the record that
+  makes it cheap.** The seed's copy filter dropped every sidecar next to the graph — the
+  freshness fingerprint included — so the query right behind the seed found no
+  fingerprint, could not diff against the parent checkout, and re-parsed the whole repo.
+  It answered correctly the whole time, which is why nothing reported it; the only
+  visible trace was a `(? files changed)` note instead of a count.
+
+- **`graft init` printed one path with two separators** on Windows (`~\.codex/`), from a
+  `/` concatenated onto an otherwise native display path.
+
+- The `windows-latest` CI leg now **gates** rather than merely reporting. The 21 failures
+  it shipped with are resolved: two were the real bugs above, most of the rest were tests
+  asserting `/` in paths that are deliberately printed with the native separator or
+  pointing a child process at `HOME` (Windows reads `USERPROFILE`), and four are now
+  explicit named skips — nothing in Node's `fs` can deny a *read* on Windows, and there
+  is no exec bit or `SIGTERM` to test.
+
 - **Windows: path scoping and `map` work again.** graft stores a repo-relative path
   for every indexed file — in node ids, `node.path`, the extract cache, the freshness
   fingerprint — and it was produced with `relative()`, which returns the *platform*
@@ -42,6 +98,9 @@
 
 [#33]: https://github.com/NanoNets/Graft/issues/33
 [#35]: https://github.com/NanoNets/Graft/issues/35
+[#36]: https://github.com/NanoNets/Graft/issues/36
+[#37]: https://github.com/NanoNets/Graft/issues/37
+[#39]: https://github.com/NanoNets/Graft/issues/39
 
 ## 0.8.2
 

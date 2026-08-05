@@ -22,9 +22,9 @@
 | Tool calls | **46% fewer** |
 | Tokens | **42% fewer** |
 | Time | **60% less** |
-| Correctness | **+50% on SWE-bench** |
+| Correctness | **+33% on SWE-bench** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 6 / 8 against a standard session's 4 / 8. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 8 / 9 against a standard session's 6 / 9. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -139,14 +139,15 @@ Same model on both arms — **Claude Sonnet 5** — same Docker images, same tur
 
 | | Standard Claude Code | With graft | |
 |---|---|---|---|
-| Correctness | 4 / 8 | **6 / 8** | **+50%** |
-| Tests passed | 766 | **786** | **+20** |
-| Tokens | 22.2M | **19.5M** | **−12%** |
-| Cost | $7.99 | **$7.17** | **−10%** |
-| Tool calls | 172 | **142** | **−17%** |
-| API requests | 311 | **267** | **−14%** |
+| Correctness | 6 / 9 | **8 / 9** | **+33%** |
+| Tests passed | 1,260 | **1,280** | **+20** |
+| Tokens | 24.5M | **21.0M** | **−15%** |
+| Cost | $8.94 | **$7.82** | **−13%** |
+| Tool calls | 205 | **162** | **−21%** |
+| API requests | 370 | **304** | **−18%** |
+| Wall-clock | 3,251s | **1,824s** | **−44%** |
 
-graft resolved **6 of 8** instances against a standard session's 4 — and got there with 17% fewer tool calls. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
+graft resolved **8 of 9** instances against a standard session's 6 — and got there with 21% fewer tool calls, 15% fewer tokens, and 44% less wall-clock time. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
@@ -220,7 +221,7 @@ npx @nanonets/graft init
 # Claude Code additionally gets the live statusline + hooks below
 ```
 
-On a terminal, `init` shows you every agent it knows about — flagging the ones it detected (via their config directories) and listing the exact files each would write — and wires only the ones you select. Claude Code is pre-selected; nothing else is. Selected agents get a marker-fenced Graft section in their shared instruction file — `AGENTS.md` (Codex, OpenCode and other CLIs that read it), `GEMINI.md`, `.github/copilot-instructions.md` — or a wholly-owned rule/skill file for the agents that use one — `.cursor/rules/graft.mdc`, `.kiro/steering/graft.md`, `.windsurf/rules/graft.md`, `.adal/skills/graft/SKILL.md` for [AdaL](https://adal.sylph.ai) (progressive-disclosure skill, same shape as the Claude Code skill below). Re-running only updates Graft's own section (or replaces the owned file) and never touches the rest of your content.
+On a terminal, `init` shows you every agent it knows about — flagging the ones it detected (via their config directories) and listing the exact files each would write — and wires only the ones you select. Claude Code is pre-selected; nothing else is. Selected agents get a marker-fenced Graft section in their shared instruction file — `AGENTS.md` (Codex, OpenCode and other CLIs that read it), `GEMINI.md`, `.github/copilot-instructions.md` — or a wholly-owned rule/skill file for the agents that use one: `.claude/skills/graft/SKILL.md`, `.cursor/rules/graft.mdc`, `.kiro/steering/graft.md`, `.windsurf/rules/graft.md`, `.adal/skills/graft/SKILL.md` for [AdaL](https://adal.sylph.ai). Claude Code is in the second group: `init` writes its own skill file and never touches your `CLAUDE.md`. Re-running only updates Graft's own section (or replaces the owned file) and never touches the rest of your content.
 
 With no TTY to prompt on — CI, a Dockerfile, a piped shell — `init` writes **nothing** and prints the command to run instead. Pass `--agents <ids>` or `--yes` to make a scripted run explicit.
 
@@ -271,7 +272,7 @@ Where a CLI agent supports user-level `hooks.json`, `init` also installs Graft's
 
 ### Claude Code (deep integration)
 
-`graft init` always wires up Claude Code, and Claude Code gets more than an instruction file. From then on, any Claude Code session opened in the repo gets:
+`graft init` always wires up Claude Code, and Claude Code gets more than the skill file above. From then on, any Claude Code session opened in the repo gets:
 
 - **a live statusline** — graph size, % enriched, and a `⚠ N stale` warning when the code has moved ahead of the graph
 - **auto-sync** — every graft query brings the graph up to date first, so an answer always describes the code as it is right now, uncommitted edits included. A query refreshes only what it reads; the markdown under `graft/` is refreshed by the background rebuild at the end of a turn that touched code. Both are structural and `$0` — auto-sync never calls the LLM on its own

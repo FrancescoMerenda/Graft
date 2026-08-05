@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../context/node-file.js";
-import { extractFile, languageOf, type Language, type RawEdge } from "./extract.js";
+import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extract.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import {
@@ -114,9 +114,9 @@ export interface GraphBuildResult {
  * directory it lives in (posix, `.` for the root). Found anywhere in the tree, so a
  * monorepo whose module is in a subdir (e.g. `backend/go.mod`) resolves too. Lets edge
  * resolution map Go import paths to in-repo files. */
-function readGoModules(root: string): GoModule[] {
+function readGoModules(root: string, repoFiles: string[]): GoModule[] {
   const mods: GoModule[] = [];
-  for (const f of walkDir(root)) {
+  for (const f of repoFiles) {
     if (basename(f) !== "go.mod") continue;
     try {
       const m = readFileSync(f, "utf8").match(/^\s*module\s+(\S+)/m);
@@ -136,13 +136,18 @@ export async function buildGraph(
 ): Promise<GraphBuildResult> {
   const root = resolve(dir);
   const outDir = contextDirFor(root, opts.contextDir);
-  const files = listSourceStats(root, outDir);
-  const discoveredScopes = discoverScopes(root);
+  // Enumerate once: source extraction, scope discovery, and Go module
+  // resolution must agree on the same Git-ignore-aware working-tree view.
+  const repoFiles = walkDir(root);
+  const files = listSourceStats(root, outDir, repoFiles);
+  const discoveredScopes = discoverScopes(root, repoFiles);
 
   const nodes: NodeV1[] = [];
   const rawEdges: RawEdge[] = [];
   const sources = new Map<string, string>();
-  const langs = new Set<Language>();
+  /** Display labels, not grammars — `.mjs` is parsed as typescript but reported as
+   * javascript, or the banner claims a repo's JavaScript went unindexed. */
+  const langs = new Set<string>();
   const errors: string[] = [];
 
   // In a git worktree there is nothing to reuse *yet* — `graft/` is gitignored, so
@@ -165,6 +170,7 @@ export async function buildGraph(
     const rel = f.rel;
     opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
     const lang = languageOf(f.abs)!;
+    const label = languageLabelOf(f.abs)!;
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -199,7 +205,7 @@ export async function buildGraph(
       }
       nodes.push(...cached.nodes);
       rawEdges.push(...cached.rawEdges);
-      langs.add(lang);
+      langs.add(label);
       return;
     }
 
@@ -209,7 +215,7 @@ export async function buildGraph(
       nodes.push(...fileNodes);
       rawEdges.push(...fileEdges);
       sources.set(rel, source);
-      langs.add(lang);
+      langs.add(label);
       entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash, nodes: fileNodes, rawEdges: fileEdges };
     } catch (err) {
       const message = `${rel}: parse failed — ${err instanceof Error ? err.message : String(err)}`;
@@ -229,7 +235,7 @@ export async function buildGraph(
     files: entries,
   });
 
-  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root) });
+  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles) });
 
   // graph.json is its own Tier-2 cache: fold in the prior meaning layer so an
   // unchanged body is never re-summarized (and a Tier-1-only run never wipes it).

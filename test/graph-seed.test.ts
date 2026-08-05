@@ -14,29 +14,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
+import { fingerprintPath } from "../src/graph/fingerprint.js";
 import { ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
 import { mainWorktreeRoot, seedGraph } from "../src/graph/seed.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { callTool } from "../src/mcp/tools.js";
+import { tmpRepo } from "./helpers.js";
 
 const MATH = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
 const MUL = "export function mul(a: number, b: number): number {\n  return a * b;\n}\n";
 
 const outOf = (d: string): string => join(d, "graft");
-const tmp = (tag: string): string => mkdtempSync(join(tmpdir(), `graft-seed-${tag}-`));
+/**
+ * Realpath'd (see {@link tmpRepo}), which this file needs more than most: git writes
+ * the *resolved* absolute path into a worktree's `.git` pointer, so `seededFrom` comes
+ * back long-form while `tmpdir()` on Windows hands out the 8.3 short form
+ * (`C:\Users\RUNNER~1\…` vs `C:\Users\runneradmin\…`). Comparing the two fails on a
+ * difference that isn't one.
+ */
+const tmp = (tag: string): string => tmpRepo(`seed-${tag}`);
 
 /* ------------------------------------------------------------------ *
  * mainWorktreeRoot: telling the shapes apart
@@ -154,7 +153,7 @@ function gitRepo(): string {
 }
 
 function addWorktree(main: string, name: string): string {
-  const wt = join(mkdtempSync(join(tmpdir(), "graft-seed-wt-")), name);
+  const wt = join(tmp("wt"), name);
   git(main, "worktree", "add", "--detach", wt, "HEAD");
   return wt;
 }
@@ -283,6 +282,10 @@ test("GRAFT_NO_SEED leaves the worktree exactly as it was", async () => {
 test("seedGraph declines a --dir override and a checkout that already has a graph", async () => {
   const main = gitRepo();
   await buildGraph(main);
+  // Present so the negative assertions below mean something: both belong to the
+  // checkout that produced them and must not travel.
+  mkdirSync(join(outOf(main), ".cache", "session"), { recursive: true });
+  writeFileSync(join(outOf(main), ".cache", "stats.json"), '{"tokens_saved":999}');
   const wt = addWorktree(main, "guards");
 
   // A custom output dir can't be mapped onto a sibling checkout, so don't guess.
@@ -292,6 +295,21 @@ test("seedGraph declines a --dir override and a checkout that already has a grap
 
   assert.equal(seedGraph(wt).seeded, true, "first call copies");
   assert.deepEqual(seedGraph(wt), { seeded: false }, "second call has nothing to do");
+
+  // The allowlist contract, asserted on a *direct* seed. The end-to-end test above
+  // checks the same files, but only after the refresh gate has run — and that gate
+  // writes a fresh fingerprint of its own, which masked a copy that never happened.
+  // It did never happen on Windows: `cpSync`'s filter dropped every sidecar while the
+  // graph itself (placed separately) arrived, so `probeDrift` found no fingerprint and
+  // the query behind the seed rebuilt the whole repo instead of the diff.
+  assert.ok(existsSync(fingerprintPath(outOf(main))), "the parent has a fingerprint to give");
+  const landed = readdirSync(join(outOf(wt), ".cache")).sort();
+  const why = `seeded .cache holds ${JSON.stringify(landed)}`;
+  assert.ok(existsSync(fingerprintPath(outOf(wt))), `the freshness record travels — ${why}`);
+  assert.ok(landed.includes("ask-index.json"), `the ask sidecar travels — ${why}`);
+  assert.ok(landed.some((f) => f.startsWith("extract.")), `the extraction memo travels — ${why}`);
+  assert.ok(!landed.includes("stats.json"), `borrowed savings do not — ${why}`);
+  assert.ok(!landed.includes("session"), `another session's transcripts do not — ${why}`);
 
   rmSync(main, { recursive: true, force: true });
   rmSync(wt, { recursive: true, force: true });
@@ -312,9 +330,9 @@ test("`graft build` in a worktree starts from the parent's graph, not from scrat
   writeFileSync(join(wt, "src", "math.ts"), `${MATH}${MUL}`);
 
   const g = await buildGraph(wt);
-  // `realpathSync`: git writes the canonical path into the worktree's `.git`, and on
-  // macOS the temp dir arrives here as the `/var` symlink to `/private/var`.
-  assert.equal(g.seededFrom, realpathSync(main), "reported, because the user never built here");
+  // Compared directly: `tmp()` already canonicalizes, and git writes that same
+  // canonical path into the worktree's `.git` pointer.
+  assert.equal(g.seededFrom, main, "reported, because the user never built here");
   assert.equal(g.parsed, 1, "only the file this checkout changed was re-parsed");
   assert.ok(g.cards > 0, "and the passive surface is rebuilt for this checkout");
 
