@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 ### Added
 
@@ -141,6 +141,7 @@
   share the name.
 
 [#33]: https://github.com/NanoNets/Graft/issues/33
+[#34]: https://github.com/NanoNets/Graft/issues/34
 [#35]: https://github.com/NanoNets/Graft/issues/35
 [#36]: https://github.com/NanoNets/Graft/issues/36
 [#37]: https://github.com/NanoNets/Graft/issues/37
