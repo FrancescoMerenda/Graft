@@ -102,6 +102,36 @@ test("A1 hash-what-you-parse consistency: build/check/fingerprint agree on a UTF
   }
 });
 
+test("A1 fingerprint reports drift when indexed UTF-16LE becomes unsupported UTF-16BE", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-utf16-drift-"));
+  const previousRefresh = process.env.GRAFT_REFRESH;
+  try {
+    const file = join(dir, "legacy.ts");
+    const source = "export function fromLegacy(): void {}\n";
+    writeFileSync(file, utf16le(source));
+    await buildGraph(dir);
+
+    writeFileSync(file, utf16be(source));
+    process.env.GRAFT_REFRESH = "hash";
+    assert.deepEqual(
+      probeDrift(dir, join(dir, "graft")),
+      { changed: ["legacy.ts"], added: [], removed: [] },
+      "becoming undecodable must rebuild once instead of serving stale UTF-16LE nodes",
+    );
+
+    await buildGraph(dir);
+    assert.deepEqual(
+      probeDrift(dir, join(dir, "graft")),
+      { changed: [], added: [], removed: [] },
+      "after the rebuild records an unsupported file, the probe must not churn",
+    );
+  } finally {
+    if (previousRefresh === undefined) delete process.env.GRAFT_REFRESH;
+    else process.env.GRAFT_REFRESH = previousRefresh;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("A1 context/build.ts + check.ts: a UTF-16LE file's summarizer input decodes cleanly, and the two tiers' content hash stays consistent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-utf16-context-"));
   try {

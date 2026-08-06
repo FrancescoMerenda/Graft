@@ -159,7 +159,13 @@ export function probeDrift(root: string, outDir: string): Drift | null {
     let now: string;
     try {
       const source = readSourceFile(f.abs);
-      if (source === null) continue; // unsupported encoding (e.g. UTF-16BE)
+      if (source === null) {
+        // A previously indexed file becoming undecodable is real drift: rebuild
+        // once to remove its stale nodes. Empty-hash entries were already skipped
+        // by the last build, so they remain clean and avoid rebuild churn.
+        if (hash) drift.changed.push(f.rel);
+        continue;
+      }
       now = contentHash(source);
     } catch {
       continue; // unreadable right now — leave it to the next probe
