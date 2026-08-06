@@ -96,6 +96,32 @@
   matches. Pass a real prefix (`--in server/src/gpu`), a full file path
   (`--in src/a.ts`), or use `grep`'s pattern to match on content.
 
+- **Duplicate-named definitions no longer silently collide onto one graph node
+  id.** A branch-guarded redeclaration, a reopened class, or any other same-name
+  definition within a file used to mint the exact same node id as an earlier
+  definition, so the second one silently overwrote the first in every id-keyed
+  lookup (`callers`, `ask`, MCP tools). Every definition now mints a unique id
+  (`~2`, `~3`, ... on a document-order duplicate), and a qualified query
+  (`Class.method`) now matches every duplicate, not just the first.
+
+- **UTF-16LE source is now decoded consistently everywhere graft reads repo
+  source.** `graft build`'s parse, `check`'s and `fingerprint`'s drift hashes,
+  the context summarizer's input, `ask --source`'s span slicer, and `grep` each
+  read files with their own `readFileSync(file, "utf8")` — hashing what the
+  parser actually sees wasn't guaranteed, and a UTF-16LE file (the common
+  encoding Windows tooling writes) got silently mojibake'd by some readers and
+  not others. All of them now share one `readSourceFile`, so a file decodes
+  identically no matter which command reads it. UTF-16BE, unsupported by
+  Node's built-in decoders, is a clean skip (an empty entry) rather than a
+  mojibake read.
+
+- **`graft callers`'s zero-hit note now says when the query name itself is
+  ambiguous.** When a symbol name is defined more than once, name resolution
+  drops a cross-file call to it rather than guessing which definition it means
+  — so a zero-hit result could really mean "something calls this, but the edge
+  was dropped for being ambiguous." The note now states how many definitions
+  share the name.
+
 [#33]: https://github.com/NanoNets/Graft/issues/33
 [#35]: https://github.com/NanoNets/Graft/issues/35
 [#36]: https://github.com/NanoNets/Graft/issues/36
