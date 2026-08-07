@@ -23,9 +23,9 @@
 | Tool-call savings | Baseline | **+46%** |
 | Token savings | Baseline | **+42%** |
 | Time savings | Baseline | **+60%** |
-| Correctness | 6 / 9 | **8 / 9 (+33%)** |
+| Correctness | 65% | **75% (+10 pts)** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 8 / 9 against Cold Claude Code's 6 / 9. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 75% of instances tested against Cold Claude Code's 65%. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -140,25 +140,39 @@ Same model on both arms — **Claude Sonnet 5** — same Docker images, same tur
 
 | Correctness & efficiency | Cold Claude Code | Claude Code with graft | Improvement |
 |---|---|---|---|
-| Correctness | 6 / 9 | **8 / 9** | **+33%** |
-| Tests passed | 1,260 | **1,280** | **+20** |
-| Token savings | 24.5M | **21.0M** | **+15%** |
-| Cost savings | $8.94 | **$7.82** | **+13%** |
-| Tool-call savings | 205 | **162** | **+21%** |
-| API-request savings | 370 | **304** | **+18%** |
-| Wall-clock savings | 3,251s | **1,824s** | **+44%** |
+| Correctness | 65% of instances tested | **75% of instances tested** | **+10 pts** |
+| Tests passed | 2,618 | **2,628** | **+10** |
+| Token savings | 45.6M | **36.9M** | **+19%** |
+| Cost savings | $16.34 | **$13.93** | **+15%** |
+| Tool-call savings | 388 | **288** | **+26%** |
+| API-request savings | 697 | **524** | **+25%** |
+| Wall-clock savings | 4,424s | **2,995s** | **+32%** |
 
-### Where graft helped most
+### Where graft fixed what cold missed
 
 | SWE-bench instance | Cold Claude Code | Claude Code with graft | Token usage vs. cold | Tool usage vs. cold |
 |---|---|---|---:|---:|
-| `django-11133` | Passed: 65 / 65 tests | **Passed: 65 / 65 tests** | **78%** | **61%** |
-| `django-10554` | Passed: 25 / 25 tests | **Passed: 25 / 25 tests** | **66%** | **69%** |
-| `django-11276` | Passed: 574 / 574 tests | **Passed: 574 / 574 tests** | **61%** | **58%** |
-| `django-11400` | Failed: 62 / 64 tests | **Passed: 64 / 64 tests** | 347% | 308% |
 | `django-11532` | Failed: 131 / 149 tests | **Passed: 149 / 149 tests** | **63%** | **60%** |
+| `django-16263` | Failed: 102 / 103 tests | **Passed: 103 / 103 tests** | **51%** | **74%** |
+| `sphinx-9461` | Failed: 61 / 62 tests | **Passed: 62 / 62 tests** | **91%** | **88%** |
+| `django-11400` | Failed: 62 / 64 tests | **Passed: 64 / 64 tests** | 347% | 308% |
+| `pylint-6386` | Failed: 7 / 8 tests | **Passed: 8 / 8 tests** | 163% | 132% |
+| `django-11885` | Failed: 42 / 44 tests | **Passed: 44 / 44 tests** | 219% | 172% |
 
-graft resolved **8 of 9** instances against Cold Claude Code's 6 — and got there with 21% fewer tool calls, 15% fewer tokens, and 44% less wall-clock time. On one instance the baseline patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over; graft found the files it missed and passed **148 / 148**.
+### Where graft cut the cost
+
+| SWE-bench instance | Cold Claude Code | Claude Code with graft | Token usage vs. cold | Tool usage vs. cold |
+|---|---|---|---:|---:|
+| `sphinx-10673` | Passed: 10 / 10 tests | **Passed: 10 / 10 tests** | **50%** | **51%** |
+| `django-16263` | Failed: 102 / 103 tests | **Passed: 103 / 103 tests** | **51%** | **74%** |
+| `django-11276` | Passed: 574 / 574 tests | **Passed: 574 / 574 tests** | **61%** | **58%** |
+| `django-10554` | Passed: 25 / 25 tests | **Passed: 25 / 25 tests** | **66%** | **69%** |
+| `django-11133` | Passed: 65 / 65 tests | **Passed: 65 / 65 tests** | **78%** | **61%** |
+| `sphinx-9461` | Failed: 61 / 62 tests | **Passed: 62 / 62 tests** | **91%** | **88%** |
+| `matplotlib-14623` | Passed: 401 / 401 tests | **Passed: 401 / 401 tests** | **95%** | **89%** |
+| `matplotlib-25775` | Passed: 96 / 96 tests | **Passed: 96 / 96 tests** | **98%** | **80%** |
+
+graft resolved **75% of the instances tested** against Cold Claude Code's 65% — and got there with 26% fewer tool calls, 19% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
