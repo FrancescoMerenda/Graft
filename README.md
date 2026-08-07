@@ -136,7 +136,7 @@ Graft never answered worse than cold, on any corpus. The pull variant gave up mo
 
 The sweep above is our harness measuring our mechanism. So we ran the industry-standard one too — **SWE-bench Verified**, real GitHub issues from real repos, graded by the official `swebench` harness. No judge model, no similarity score: your patch is applied, the maintainers' own tests are run, and you either flip the failing test without breaking the passing ones or you don't.
 
-Same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
+**20 instances**, same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
 
 | Correctness & efficiency | Cold Claude Code | Claude Code with graft | Improvement |
 |---|---|---|---|
@@ -172,7 +172,7 @@ Same model on both arms — **Claude Sonnet 5** — same Docker images, same tur
 | `matplotlib-14623` | Passed: 401 / 401 tests | **Passed: 401 / 401 tests** | **95%** | **89%** |
 | `matplotlib-25775` | Passed: 96 / 96 tests | **Passed: 96 / 96 tests** | **98%** | **80%** |
 
-graft resolved **75% of the instances tested** against Cold Claude Code's 65% — and got there with 26% fewer tool calls, 19% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
+graft resolved **15 of 20 instances** against Cold Claude Code's 13 — and got there with 26% fewer tool calls, 19% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
