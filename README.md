@@ -23,9 +23,9 @@
 | Tool-call savings | Baseline | **+46%** |
 | Token savings | Baseline | **+42%** |
 | Time savings | Baseline | **+60%** |
-| Correctness | 65% | **75% (+10 pts)** |
+| Correctness | 69% | **86% (+17 pts)** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 75% of instances tested against Cold Claude Code's 65%. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 86% of instances tested against Cold Claude Code's 69%. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -106,7 +106,7 @@ Graft builds that understanding **once** and writes it into your repo as a folde
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/graft-cold-vs-graft-dark.png">
-    <img src="assets/graft-cold-vs-graft.png" alt="The same task, 'fix the auth bug', run two ways. A cold Claude Code session re-reads the repo and wanders file to file; Claude Code + graft loads its map once and rides the hooks to one clean pass. With Graft: 46% fewer tool calls, 42% fewer tokens, 60% less time, +33% on SWE-bench." width="880"/>
+    <img src="assets/graft-cold-vs-graft.png" alt="The same task, 'fix the auth bug', run two ways. A cold Claude Code session re-reads the repo and wanders file to file; Claude Code + graft loads its map once and rides the hooks to one clean pass. With Graft: 46% fewer tool calls, 42% fewer tokens, 60% less time, +24% more SWE-bench instances resolved." width="880"/>
   </picture>
 </p>
 
@@ -136,17 +136,17 @@ Graft never answered worse than cold, on any corpus. The pull variant gave up mo
 
 The sweep above is our harness measuring our mechanism. So we ran the industry-standard one too — **SWE-bench Verified**, real GitHub issues from real repos, graded by the official `swebench` harness. No judge model, no similarity score: your patch is applied, the maintainers' own tests are run, and you either flip the failing test without breaking the passing ones or you don't.
 
-**20 instances**, same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
+**36 instances**, same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
 
 | Correctness & efficiency | Cold Claude Code | Claude Code with graft | Improvement |
 |---|---|---|---|
-| Correctness | 65% of instances tested | **75% of instances tested** | **+10 pts** |
-| Tests passed | 2,618 | **2,628** | **+10** |
-| Token savings | 45.6M | **36.9M** | **+19%** |
-| Cost savings | $16.34 | **$13.93** | **+15%** |
-| Tool-call savings | 388 | **288** | **+26%** |
-| API-request savings | 697 | **524** | **+25%** |
-| Wall-clock savings | 4,424s | **2,995s** | **+32%** |
+| Correctness | 25 / 36 (69%) | **31 / 36 (86%)** | **+17 pts** |
+| Tests passed | 6,523 | **6,543** | **+20** |
+| Token savings | 107.0M | **85.0M** | **+21%** |
+| Cost savings | $39.34 | **$31.93** | **+19%** |
+| Tool-call savings | 998 | **759** | **+24%** |
+| API-request savings | 1,777 | **1,377** | **+23%** |
+| Wall-clock savings | 8,721s | **6,488s** | **+26%** |
 
 ### Where graft fixed what cold missed
 
@@ -158,6 +158,10 @@ The sweep above is our harness measuring our mechanism. So we ran the industry-s
 | `django-11400` | Failed: 62 / 64 tests | **Passed: 64 / 64 tests** | 347% | 308% |
 | `pylint-6386` | Failed: 7 / 8 tests | **Passed: 8 / 8 tests** | 163% | 132% |
 | `django-11885` | Failed: 42 / 44 tests | **Passed: 44 / 44 tests** | 219% | 172% |
+| `pytest-5840` | Failed: 51 / 53 tests | **Passed: 53 / 53 tests** | **30%** | **39%** |
+| `sphinx-8548` | Failed: 5 / 6 tests | **Passed: 6 / 6 tests** | **83%** | **80%** |
+| `django-12406` | Failed: 166 / 168 tests | **Passed: 168 / 168 tests** | 125% | 103% |
+| `django-16938` | Failed: 83 / 88 tests | **Passed: 88 / 88 tests** | 154% | 119% |
 
 ### Where graft cut the cost
 
@@ -171,8 +175,22 @@ The sweep above is our harness measuring our mechanism. So we ran the industry-s
 | `sphinx-9461` | Failed: 61 / 62 tests | **Passed: 62 / 62 tests** | **91%** | **88%** |
 | `matplotlib-14623` | Passed: 401 / 401 tests | **Passed: 401 / 401 tests** | **95%** | **89%** |
 | `matplotlib-25775` | Passed: 96 / 96 tests | **Passed: 96 / 96 tests** | **98%** | **80%** |
+| `pytest-5840` | Failed: 51 / 53 tests | **Passed: 53 / 53 tests** | **30%** | **39%** |
+| `django-12741` | Passed: 69 / 69 tests | **Passed: 69 / 69 tests** | **47%** | **42%** |
+| `sympy-19783` | Passed: 11 / 11 tests | **Passed: 11 / 11 tests** | **61%** | **64%** |
+| `pylint-8898` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **62%** | **67%** |
+| `pylint-6528` | Passed: 175 / 175 tests | **Passed: 175 / 175 tests** | **67%** | **71%** |
+| `sklearn-12682` | Passed: 67 / 67 tests | **Passed: 67 / 67 tests** | **72%** | **70%** |
+| `xarray-3993` | Passed: 2400 / 2400 tests | **Passed: 2400 / 2400 tests** | **74%** | **65%** |
+| `xarray-3305` | Passed: 654 / 654 tests | **Passed: 654 / 654 tests** | **77%** | **70%** |
+| `sphinx-8548` | Failed: 5 / 6 tests | **Passed: 6 / 6 tests** | **83%** | **80%** |
+| `django-16315` | Passed: 43 / 43 tests | **Passed: 43 / 43 tests** | **85%** | **83%** |
+| `django-16032` | Passed: 79 / 79 tests | **Passed: 79 / 79 tests** | **90%** | **91%** |
+| `django-14011` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **90%** | **96%** |
+| `sphinx-8120` | Passed: 45 / 45 tests | **Passed: 45 / 45 tests** | **93%** | **75%** |
+| `django-15103` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **96%** | **80%** |
 
-graft resolved **15 of 20 instances** against Cold Claude Code's 13 — and got there with 26% fewer tool calls, 19% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
+graft resolved **31 of 36 instances** against Cold Claude Code's 25 — and got there with 24% fewer tool calls, 21% fewer tokens, and 26% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
