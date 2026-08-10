@@ -23,9 +23,9 @@
 | Tool-call savings | Baseline | **+46%** |
 | Token savings | Baseline | **+42%** |
 | Time savings | Baseline | **+60%** |
-| Correctness | 69% | **86% (+17 pts)** |
+| Correctness | 54% | **66% (+12 pts)** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 86% of instances tested against Cold Claude Code's 69%. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
+<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 66% of instances tested against Cold Claude Code's 54%. The "up to 4× cheaper / 3× faster" figures are the biggest single-task wins from a separate real-repo sweep (PocketBase, ollama, Excalidraw). [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
 
 </div>
 
@@ -106,7 +106,7 @@ Graft builds that understanding **once** and writes it into your repo as a folde
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/graft-cold-vs-graft-dark.png">
-    <img src="assets/graft-cold-vs-graft.png" alt="The same task, 'fix the auth bug', run two ways. A cold Claude Code session re-reads the repo and wanders file to file; Claude Code + graft loads its map once and rides the hooks to one clean pass. With Graft: 46% fewer tool calls, 42% fewer tokens, 60% less time, +24% more SWE-bench instances resolved." width="880"/>
+    <img src="assets/graft-cold-vs-graft.png" alt="The same task, 'fix the auth bug', run two ways. A cold Claude Code session re-reads the repo and wanders file to file; Claude Code + graft loads its map once and rides the hooks to one clean pass. With Graft: 46% fewer tool calls, 42% fewer tokens, 60% less time, +22% more SWE-bench instances resolved." width="880"/>
   </picture>
 </p>
 
@@ -136,17 +136,16 @@ Graft never answered worse than cold, on any corpus. The pull variant gave up mo
 
 The sweep above is our harness measuring our mechanism. So we ran the industry-standard one too — **SWE-bench Verified**, real GitHub issues from real repos, graded by the official `swebench` harness. No judge model, no similarity score: your patch is applied, the maintainers' own tests are run, and you either flip the failing test without breaking the passing ones or you don't.
 
-**36 instances**, same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
+**50 instances**, same model on both arms — **Claude Sonnet 5** — same Docker images, same turn limits. The only difference is whether graft is wired in.
 
 | Correctness & efficiency | Cold Claude Code | Claude Code with graft | Improvement |
 |---|---|---|---|
-| Correctness | 25 / 36 (69%) | **31 / 36 (86%)** | **+17 pts** |
-| Tests passed | 6,523 | **6,543** | **+20** |
-| Token savings | 107.0M | **85.0M** | **+21%** |
-| Cost savings | $39.34 | **$31.93** | **+19%** |
-| Tool-call savings | 998 | **759** | **+24%** |
-| API-request savings | 1,777 | **1,377** | **+23%** |
-| Wall-clock savings | 8,721s | **6,488s** | **+26%** |
+| Correctness | 27 / 50 (54%) | **33 / 50 (66%)** | **+12 pts** |
+| Token savings | 142.0M | **109.4M** | **+23%** |
+| Cost savings | $52.34 | **$42.43** | **+19%** |
+| Tool-call savings | 1,370 | **1,031** | **+25%** |
+| API-request savings | 2,455 | **1,875** | **+24%** |
+| Wall-clock savings | 13,094s | **8,922s** | **+32%** |
 
 ### Where graft fixed what cold missed
 
@@ -190,11 +189,11 @@ The sweep above is our harness measuring our mechanism. So we ran the industry-s
 | `sphinx-8120` | Passed: 45 / 45 tests | **Passed: 45 / 45 tests** | **93%** | **75%** |
 | `django-15103` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **96%** | **80%** |
 
-graft resolved **31 of 36 instances** against Cold Claude Code's 25 — and got there with 24% fewer tool calls, 21% fewer tokens, and 26% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
+graft resolved **33 of 50 instances** against Cold Claude Code's 27 — and got there with 25% fewer tool calls, 23% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
 
-<sub>Correctness and tests over all instances; tokens, cost and calls over the instances both arms resolved, for a like-for-like comparison. Official SWE-bench Verified images and official `swebench` 4.1.0 grader, native x86_64.</sub>
+<sub>Correctness over all instances; tokens, cost and calls over the instances both arms resolved, for a like-for-like comparison. Official SWE-bench Verified images and official `swebench` 4.1.0 grader, native x86_64.</sub>
 
 ---
 
