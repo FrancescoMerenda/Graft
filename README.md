@@ -147,48 +147,6 @@ The sweep above is our harness measuring our mechanism. So we ran the industry-s
 | API-request savings | 2,455 | **1,875** | **+24%** |
 | Wall-clock savings | 13,094s | **8,922s** | **+32%** |
 
-### Where graft fixed what cold missed
-
-| SWE-bench instance | Cold Claude Code | Claude Code with graft | Token usage vs. cold | Tool usage vs. cold |
-|---|---|---|---:|---:|
-| `django-11532` | Failed: 131 / 149 tests | **Passed: 149 / 149 tests** | **63%** | **60%** |
-| `django-16263` | Failed: 102 / 103 tests | **Passed: 103 / 103 tests** | **51%** | **74%** |
-| `sphinx-9461` | Failed: 61 / 62 tests | **Passed: 62 / 62 tests** | **91%** | **88%** |
-| `django-11400` | Failed: 62 / 64 tests | **Passed: 64 / 64 tests** | 347% | 308% |
-| `pylint-6386` | Failed: 7 / 8 tests | **Passed: 8 / 8 tests** | 163% | 132% |
-| `django-11885` | Failed: 42 / 44 tests | **Passed: 44 / 44 tests** | 219% | 172% |
-| `pytest-5840` | Failed: 51 / 53 tests | **Passed: 53 / 53 tests** | **30%** | **39%** |
-| `sphinx-8548` | Failed: 5 / 6 tests | **Passed: 6 / 6 tests** | **83%** | **80%** |
-| `django-12406` | Failed: 166 / 168 tests | **Passed: 168 / 168 tests** | 125% | 103% |
-| `django-16938` | Failed: 83 / 88 tests | **Passed: 88 / 88 tests** | 154% | 119% |
-
-### Where graft cut the cost
-
-| SWE-bench instance | Cold Claude Code | Claude Code with graft | Token usage vs. cold | Tool usage vs. cold |
-|---|---|---|---:|---:|
-| `sphinx-10673` | Passed: 10 / 10 tests | **Passed: 10 / 10 tests** | **50%** | **51%** |
-| `django-16263` | Failed: 102 / 103 tests | **Passed: 103 / 103 tests** | **51%** | **74%** |
-| `django-11276` | Passed: 574 / 574 tests | **Passed: 574 / 574 tests** | **61%** | **58%** |
-| `django-10554` | Passed: 25 / 25 tests | **Passed: 25 / 25 tests** | **66%** | **69%** |
-| `django-11133` | Passed: 65 / 65 tests | **Passed: 65 / 65 tests** | **78%** | **61%** |
-| `sphinx-9461` | Failed: 61 / 62 tests | **Passed: 62 / 62 tests** | **91%** | **88%** |
-| `matplotlib-14623` | Passed: 401 / 401 tests | **Passed: 401 / 401 tests** | **95%** | **89%** |
-| `matplotlib-25775` | Passed: 96 / 96 tests | **Passed: 96 / 96 tests** | **98%** | **80%** |
-| `pytest-5840` | Failed: 51 / 53 tests | **Passed: 53 / 53 tests** | **30%** | **39%** |
-| `django-12741` | Passed: 69 / 69 tests | **Passed: 69 / 69 tests** | **47%** | **42%** |
-| `sympy-19783` | Passed: 11 / 11 tests | **Passed: 11 / 11 tests** | **61%** | **64%** |
-| `pylint-8898` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **62%** | **67%** |
-| `pylint-6528` | Passed: 175 / 175 tests | **Passed: 175 / 175 tests** | **67%** | **71%** |
-| `sklearn-12682` | Passed: 67 / 67 tests | **Passed: 67 / 67 tests** | **72%** | **70%** |
-| `xarray-3993` | Passed: 2400 / 2400 tests | **Passed: 2400 / 2400 tests** | **74%** | **65%** |
-| `xarray-3305` | Passed: 654 / 654 tests | **Passed: 654 / 654 tests** | **77%** | **70%** |
-| `sphinx-8548` | Failed: 5 / 6 tests | **Passed: 6 / 6 tests** | **83%** | **80%** |
-| `django-16315` | Passed: 43 / 43 tests | **Passed: 43 / 43 tests** | **85%** | **83%** |
-| `django-16032` | Passed: 79 / 79 tests | **Passed: 79 / 79 tests** | **90%** | **91%** |
-| `django-14011` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **90%** | **96%** |
-| `sphinx-8120` | Passed: 45 / 45 tests | **Passed: 45 / 45 tests** | **93%** | **75%** |
-| `django-15103` | Passed: 19 / 19 tests | **Passed: 19 / 19 tests** | **96%** | **80%** |
-
 graft resolved **33 of 50 instances** against Cold Claude Code's 27 — and got there with 25% fewer tool calls, 23% fewer tokens, and 32% less wall-clock time. Every correctness win has the same shape: the baseline patches one file and misses its siblings. On `django-11532` it patched 1 of the 5 files the fix requires and broke 18 previously-passing tests, twice over. On `django-16263` it patched 1 of 4 and scored 102 / 103. graft found the rest — and on `django-16263` did it in half the tokens and half the time.
 
 Two harnesses, two claims: the controlled sweep says graft is cheaper and faster, SWE-bench says it's also more correct.
