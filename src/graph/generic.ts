@@ -57,6 +57,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "solidity", exts: [".sol"], wasm: "solidity" },
   { name: "ocaml", exts: [".ml", ".mli"], wasm: "ocaml" },
   { name: "zig", exts: [".zig"], wasm: "zig" },
+  { name: "dart", exts: [".dart"], wasm: "dart" }, // surfaced by PR #38 (@muneebshere)
 ];
 
 const byExt = new Map<string, GenericLang>();
