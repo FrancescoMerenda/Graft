@@ -119,7 +119,7 @@ export function resolveEdges(
         // No owner-qualified match means the call is unresolved. A unique bare
         // method name is not evidence that this receiver has that method — a
         // name-fallback here was measured to HALVE call-edge precision (73%→37%
-        // vs a SCIP oracle) for a 3x count inflation, i.e. mostly noise. See #35.
+        // vs a compiler-grade oracle) for a 3x count inflation, i.e. noise. See #35.
         continue;
       }
       // Depth-tier bare calls are function calls (method calls arrive as viaMember
