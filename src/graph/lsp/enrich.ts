@@ -10,7 +10,7 @@
  * a timeout / an error → the graph is returned unchanged.
  */
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { relPosix } from "../../util/paths.js";
 import { languageLabelOf } from "../extract.js";
@@ -41,6 +41,13 @@ export async function enrichWithLsp(
   for (const n of graph.nodes) { const l = langOf(n.path); if (l) languagesPresent.add(l); }
   const server = pickServer(languagesPresent);
   if (!server) return { added: 0, queried: 0, server: null };
+
+  // Canonicalize the root: servers (rust-analyzer/clangd) report callee URIs
+  // against the REAL path, so under a symlinked checkout (macOS /tmp →
+  // /private/tmp, common in CI) an un-resolved root would fail the in-repo test
+  // for every callee and silently zero out enrichment.
+  const realRoot = (() => { try { return realpathSync(root); } catch { return root; } })();
+  root = realRoot;
 
   // Index nodes by file for both source selection and callee→node mapping.
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
@@ -115,8 +122,10 @@ export async function enrichWithLsp(
     for (const callee of callees) {
       let calleeAbs: string;
       try { calleeAbs = fileURLToPath(callee.uri); } catch { continue; }
-      if (!calleeAbs.startsWith(root)) continue; // external/dependency — skip
       const rel = relPosix(root, calleeAbs);
+      // In-repo iff the repo-relative path doesn't escape the root. (A raw
+      // `startsWith(root)` is separator-unsafe: root=/a/foo matches /a/foo-bar.)
+      if (rel.startsWith("..") || rel.startsWith("/")) continue; // external/dependency
       const target = nodeAt(rel, (callee.selectionRange?.start.line ?? callee.range.start.line) + 1);
       if (!target || target.id === src.id) continue;
       const key = `${src.id}\0calls\0${target.id}`;

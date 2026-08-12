@@ -224,13 +224,15 @@ export function rankScopesAndFuse(
 
   // Per-scope raw best + strength, computed once so we can pick survivors and,
   // if the gate would exclude EVERY scope, rescue the strongest one (below).
-  const meta = new Map<string, { lex: Map<string, number>; maxLex: number; bestId: string; passes: boolean }>();
+  const meta = new Map<string, { lex: Map<string, number>; maxLex: number; bestId: string; strength: number; passes: boolean }>();
   for (const [scope, lex] of lexByScope) {
     let maxLex = 0, bestId = "";
     for (const [id, v] of lex) if (v > maxLex || (v === maxLex && id < bestId)) { maxLex = v; bestId = id; }
     if (maxLex <= 0) continue;
     const { coverage, coverageStrong } = ops.strength(scope, bestId);
-    meta.set(scope, { lex, maxLex, bestId, passes: coverageStrong >= STRONG_FLOOR || coverage >= HIGH_FLOOR });
+    // strength is the scale-INVARIANT [0,1] match share (name vs name+path+body);
+    // used to pick the rescue scope fairly across corpora, unlike raw maxLex.
+    meta.set(scope, { lex, maxLex, bestId, strength: Math.max(coverage, coverageStrong), passes: coverageStrong >= STRONG_FLOOR || coverage >= HIGH_FLOOR });
   }
 
   const survivors = [...meta.entries()].filter(([, m]) => m.passes).map(([s]) => s);
@@ -243,7 +245,15 @@ export function rankScopesAndFuse(
   // abstaining. The gate still does its real job — suppressing a weak scope
   // beside a strong one — whenever any scope passes.
   if (survivors.length === 0 && meta.size > 0) {
-    survivors.push([...meta.entries()].sort((a, b) => b[1].maxLex - a[1].maxLex || a[0].localeCompare(b[0]))[0][0]);
+    // Tiebreak on scale-invariant match STRENGTH (not raw per-corpus maxLex,
+    // which would let the biggest scope's numerically-larger score win — the very
+    // cross-corpus scale bias RRF exists to avoid). Fall back to maxLex only when
+    // strength ties (e.g. all zero), then scope name for determinism.
+    survivors.push(
+      [...meta.entries()].sort(
+        (a, b) => b[1].strength - a[1].strength || b[1].maxLex - a[1].maxLex || a[0].localeCompare(b[0]),
+      )[0][0],
+    );
   }
   for (const [scope, m] of meta) if (!survivors.includes(scope)) alsoMatched.push({ scope, bestId: m.bestId });
 

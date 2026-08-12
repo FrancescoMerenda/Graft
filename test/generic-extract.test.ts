@@ -82,8 +82,11 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     defs: ["class:A", "method:helper", "method:run"], call: ["run", "helper"],
   },
   {
+    // Explicit call (`self.draw`), not a parenless bareword: graft's ruby query
+    // captures only real call nodes — the upstream bareword @reference.call
+    // needs locals-tracking graft doesn't run, so it's dropped for precision.
     lang: "ruby", file: "a.rb",
-    src: `class Widget\n  def render\n    draw\n  end\n  def draw\n    1\n  end\nend\n`,
+    src: `class Widget\n  def render\n    self.draw\n  end\n  def draw\n    1\n  end\nend\n`,
     defs: ["class:Widget", "method:draw", "method:render"], call: ["render", "draw"],
   },
   {
