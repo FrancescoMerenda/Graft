@@ -47,12 +47,24 @@ export function resolveEdges(
   const ownerMethod = new Map<string, NodeV1[]>();
   // Go package resolution: dir (posix) → its `.go` file node ids, for import mapping.
   const goFilesByDir = new Map<string, string[]>();
+  // Java package resolution: a file's package-path suffix (`com/acme/Foo.java`) → its
+  // file node ids. A Java import names a type by its fully-qualified name, which by
+  // language convention mirrors the directory path under whatever source root the
+  // project uses (`src/main/java/`, `src/`, …) — so the suffix is the portable key.
+  const javaFilesBySuffix = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
       if (hasGoModules && n.path.endsWith(".go")) {
         const dir = posix.dirname(toPosixPath(n.path));
         push(goFilesByDir, dir, n.id);
+      }
+      if (n.path.endsWith(".java")) {
+        // Index every directory-boundary suffix, since the source root is unknown:
+        // `src/main/java/com/acme/Foo.java` is reachable as `com/acme/Foo.java`,
+        // `acme/Foo.java`, and so on. The import's own FQN picks the right depth.
+        const parts = toPosixPath(n.path).split("/");
+        for (let i = 0; i < parts.length; i++) push(javaFilesBySuffix, parts.slice(i).join("/"), n.id);
       }
       continue;
     }
@@ -95,7 +107,9 @@ export function resolveEdges(
       const target =
         hasGoModules && e.file.endsWith(".go")
           ? resolveGoImport(e.specifier, opts.goModules!, goFilesByDir)
-          : resolveImport(e.specifier, e.file, byId);
+          : e.file.endsWith(".java")
+            ? resolveJavaImport(e.specifier, javaFilesBySuffix)
+            : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       const kinds: Kind[] = e.relation === "implements" ? ["interface"] : ["class", "interface"];
@@ -120,7 +134,14 @@ export function resolveEdges(
         // method name is not evidence that this receiver has that method.
         continue;
       }
-      const hit = resolveName(e.name!, e.file, ["function"], perFileName, globalName);
+      // Java emits only one kind of non-member call: `new Foo()`, whose target is a
+      // TYPE, not a function (Java has no free functions — an implicit-`this` call is
+      // spelled as a member call in extract.ts). Resolving it against the function
+      // index would drop every constructor edge.
+      const kinds: Kind[] = e.file.endsWith(".java")
+        ? ["class", "struct", "enum", "interface"]
+        : ["function"];
+      const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }
   }
@@ -216,6 +237,40 @@ function resolveImport(spec: string, file: string, byId: Map<string, NodeV1>): s
     ...IMPORT_EXTS.map((e) => `${noExt}/index${e}`),
   ];
   for (const c of candidates) if (byId.has(c)) return c;
+  return spec;
+}
+
+/**
+ * Resolve a Java import's fully-qualified type name to an in-repo file node;
+ * otherwise return the raw specifier (JDK or third-party type).
+ *
+ * Java names a *type*, not a path, and states no source root — `com.acme.Foo` may
+ * live under `src/main/java/`, `src/`, or a module dir. Matching on the path SUFFIX
+ * (`com/acme/Foo.java`) is therefore root-agnostic and needs no build-file parsing,
+ * which is what keeps this deterministic and dependency-free.
+ *
+ * `import static com.acme.Foo.bar` names a member, so when the full name misses, the
+ * last segment is dropped and the enclosing type retried. A wildcard (`com.acme.*`)
+ * names a package rather than one file and is deliberately left unresolved: picking a
+ * representative would invent an edge the source does not state.
+ *
+ * A suffix shared by two files (the same FQN under two source roots, e.g. a
+ * duplicated test tree) is ambiguous, so it stays unresolved rather than guessing.
+ */
+function resolveJavaImport(spec: string, filesBySuffix: Map<string, string[]>): string {
+  const hit = (fqn: string): string | null => {
+    const suffix = `${fqn.split(".").join("/")}.java`;
+    const files = filesBySuffix.get(suffix);
+    return files && files.length === 1 ? files[0] : null;
+  };
+  const direct = hit(spec);
+  if (direct) return direct;
+  // `import static a.b.C.member` → retry as `a.b.C`.
+  const dot = spec.lastIndexOf(".");
+  if (dot > 0) {
+    const enclosing = hit(spec.slice(0, dot));
+    if (enclosing) return enclosing;
+  }
   return spec;
 }
 
