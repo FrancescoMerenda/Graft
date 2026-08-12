@@ -127,7 +127,7 @@ export function resolveEdges(
     } else if (e.relation === "calls") {
       if (e.viaMember) {
         if (!e.recvType) continue;
-        const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents);
+        const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, e.argCount);
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
         if (hit) add(e.source, hit.id, "calls", hit.confidence);
         // No owner-qualified match means the call is unresolved. A unique bare
@@ -185,20 +185,45 @@ function resolveName(
  *   - `null` — the whole chain (recvType + ancestors, breadth-first, depth ≤ 3,
  *     cycle-guarded) had zero candidates at every level.
  */
+/**
+ * Narrow an overload set to the candidates a call of `argCount` arguments could
+ * reach. Only Java emits `argCount`/`arity`, so for every other language this is
+ * the identity function and resolution is byte-for-byte what it was.
+ *
+ * Deliberately conservative in both directions:
+ *   - A variadic candidate (`String... xs`) accepts anything from `arity - 1`
+ *     upward, so it is never filtered out by count.
+ *   - A candidate with no recorded arity (a graph built before this field) is
+ *     kept, since absence of data is not evidence of a mismatch.
+ *   - If narrowing leaves nothing, the ORIGINAL set is returned. An empty result
+ *     would silently drop a real edge; handing the full set back lets the existing
+ *     same-file / "ambiguous" logic make the call exactly as before.
+ */
+function narrowByArity(candidates: NodeV1[], argCount?: number): NodeV1[] {
+  if (argCount === undefined || candidates.length < 2) return candidates;
+  const fits = candidates.filter((c) => {
+    if (c.arity === undefined) return true;
+    return c.variadic ? argCount >= c.arity - 1 : c.arity === argCount;
+  });
+  return fits.length > 0 ? fits : candidates;
+}
+
 function resolveTypedMember(
   recvType: string,
   name: string,
   file: string,
   ownerMethod: Map<string, NodeV1[]>,
   classParents: Map<string, string[]>,
+  argCount?: number,
 ): { id: string; confidence: EdgeV1["confidence"] } | "ambiguous" | null {
   const MAX_DEPTH = 3;
   const visited = new Set<string>([recvType]);
   let frontier = [recvType];
   for (let depth = 0; depth <= MAX_DEPTH && frontier.length; depth++) {
     for (const type of frontier) {
-      const candidates = ownerMethod.get(`${type}.${name}`);
-      if (!candidates || candidates.length === 0) continue; // try next ancestor
+      const all = ownerMethod.get(`${type}.${name}`);
+      if (!all || all.length === 0) continue; // try next ancestor
+      const candidates = narrowByArity(all, argCount);
       if (candidates.length === 1) {
         const c = candidates[0];
         return { id: c.id, confidence: c.path === file ? "extracted" : "inferred" };

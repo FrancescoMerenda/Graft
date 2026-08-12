@@ -347,3 +347,110 @@ test("Java extraction: an ambiguous package suffix stays unresolved rather than 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Overload fixture: a 2-arg convenience method delegating to the 3-arg one — the
+ * commonest shape in Java, and the one that produced a self-loop before arity was
+ * recorded. `log` adds a variadic pair; `render` a same-arity pair. */
+const OVERLOADS = `package com.acme;
+
+public final class Svc {
+
+  public String join(String left, String right) {
+    return join(left, right, "-");
+  }
+
+  public String join(String left, String right, String separator) {
+    return left + separator + right;
+  }
+
+  public void log(String msg) {
+    log(msg, "a", "b");
+  }
+
+  public void log(String msg, String... rest) {}
+
+  public String render(String s) {
+    return render(s.length());
+  }
+
+  public String render(int n) {
+    return String.valueOf(n);
+  }
+}
+`;
+
+function overloadFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "graft-java-overload-"));
+  mkdirSync(join(dir, PKG), { recursive: true });
+  writeFileSync(join(dir, PKG, "Svc.java"), OVERLOADS);
+  return dir;
+}
+
+test("Java overloads: a delegating call resolves to the other overload, not itself", async () => {
+  // Before arity was recorded, both `join` nodes were candidates, the same-file
+  // tiebreak picked the first, and the 2-arg method got a `calls` edge to ITSELF —
+  // marked `extracted`, i.e. confidently wrong. Overloading exists in none of the
+  // other languages graft parses, so no existing fixture could have caught this.
+  const dir = overloadFixture();
+  try {
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const svc = `${PKG}/Svc.java`;
+    const calls = graph.edges.filter((e) => e.relation === "calls");
+
+    assert.ok(
+      calls.some((e) => e.source === `${svc}#Svc.join` && e.target === `${svc}#Svc.join~2`),
+      "the 2-arg join should call the 3-arg overload",
+    );
+    assert.ok(
+      !calls.some((e) => e.source === `${svc}#Svc.join` && e.target === `${svc}#Svc.join`),
+      "and must not call itself",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Java overloads: a variadic candidate is never filtered out by argument count", async () => {
+  // `log(String, String...)` has arity 2 but accepts 1..n arguments. Filtering on
+  // equality would exclude it from a 3-argument call and drop a real edge.
+  const dir = overloadFixture();
+  try {
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const svc = `${PKG}/Svc.java`;
+
+    const variadic = graph.nodes.find((n) => n.id === `${svc}#Svc.log~2`);
+    assert.equal(variadic?.arity, 2, "declared arity counts the vararg parameter");
+    assert.equal(variadic?.variadic, true, "and it is flagged variadic");
+
+    assert.ok(
+      graph.edges.some(
+        (e) => e.relation === "calls" && e.source === `${svc}#Svc.log` && e.target === `${svc}#Svc.log~2`,
+      ),
+      "a 3-argument call should still reach the variadic overload",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Java overloads: same-arity overloads stay unresolved rather than guessing", async () => {
+  // `render(String)` and `render(int)` both have arity 1 — they differ only by
+  // parameter TYPE, which this pass does not model. The documented limit: narrowing
+  // cannot separate them, so the same-file tiebreak applies and no type-based guess
+  // is made. Pinned so a future type-aware change is a deliberate one.
+  const dir = overloadFixture();
+  try {
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const svc = `${PKG}/Svc.java`;
+
+    const a = graph.nodes.find((n) => n.id === `${svc}#Svc.render`);
+    const b = graph.nodes.find((n) => n.id === `${svc}#Svc.render~2`);
+    assert.equal(a?.arity, 1);
+    assert.equal(b?.arity, 1, "both render overloads have arity 1, so count cannot separate them");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -82,6 +82,11 @@ export interface RawEdge {
   /** calls with viaMember: the receiver's resolved type name (from bindings /
    * self / this / Go receiver), when a confident local clue exists. */
   recvType?: string;
+  /** calls: the number of arguments at the CALL SITE. Only emitted for languages
+   * with overloading (Java), where a same-named sibling on the same class is
+   * otherwise indistinguishable — and picking wrong turns a delegating overload
+   * into a self-loop. */
+  argCount?: number;
 }
 
 export interface ExtractResult {
@@ -228,6 +233,8 @@ interface DefDescriptor {
   kind: Kind;
   headerEnd: number; // char index where the signature ends (body starts)
   hashNode: Parser.SyntaxNode; // node whose text forms body_hash / span
+  arity?: number; // declared parameter count — overload disambiguation (Java)
+  variadic?: boolean; // last parameter is a vararg, so `arity` is a minimum
 }
 
 /** tree-sitter's string `parse()` fails with "Invalid argument" on any input
@@ -343,6 +350,8 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       summary: null,
       crux: null,
       ...(owner !== undefined ? { owner } : {}),
+      ...(desc.arity !== undefined ? { arity: desc.arity } : {}),
+      ...(desc.variadic ? { variadic: true } : {}),
     });
     // structural containment
     edges.push({ source: ctx.parentId, relation: "contains", targetId: id, file: ctx.rel });
@@ -385,6 +394,9 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
         viaMember: callee.viaMember,
         file: ctx.rel,
       };
+      // Java only: the call site's argument count, to pick the right overload.
+      const argCount = ctx.lang === "java" ? javaArgCount(node) : undefined;
+      if (argCount !== undefined) callEdge.argCount = argCount;
       const recvType = resolveRecvType(callee.receiver, ctx);
       edges.push(recvType ? { ...callEdge, recvType } : callEdge);
     }
@@ -602,7 +614,25 @@ function describeJava(node: Parser.SyntaxNode, ctx: WalkCtx): DefDescriptor | nu
   const name = node.childForFieldName("name")?.text;
   if (!name) return null;
   const body = node.childForFieldName("body");
-  return { name, kind: mapped, headerEnd: body ? body.startIndex : node.endIndex, hashNode: node };
+  const desc: DefDescriptor = {
+    name,
+    kind: mapped,
+    headerEnd: body ? body.startIndex : node.endIndex,
+    hashNode: node,
+  };
+  // Only callables carry arity. A record declaration also has a `parameters` node,
+  // but its components are not an overload set and must never be filtered against.
+  if (node.type === "method_declaration" || node.type === "constructor_declaration") {
+    const params = node.childForFieldName("parameters");
+    if (params) {
+      const declared = params.namedChildren.filter(
+        (c) => c.type === "formal_parameter" || c.type === "spread_parameter",
+      );
+      desc.arity = declared.length;
+      if (declared.some((c) => c.type === "spread_parameter")) desc.variadic = true;
+    }
+  }
+  return desc;
 }
 
 /** Java visibility: `public` (or `protected`) on the declaration's own modifier list.
@@ -736,6 +766,15 @@ function calleeName(
     return p ? { name: p.text, viaMember: true, receiver: tsReceiver(fn) } : null;
   }
   return null;
+}
+
+/** The number of arguments at a Java call site (`method_invocation` or
+ * `object_creation_expression`), read off the `arguments` list. Undefined when the
+ * list is absent, which keeps resolution at its previous name-only behavior rather
+ * than filtering on a count we never established. */
+function javaArgCount(node: Parser.SyntaxNode): number | undefined {
+  const args = node.childForFieldName("arguments");
+  return args ? args.namedChildren.length : undefined;
 }
 
 /** A Java call's receiver text: a bare identifier (`repo.save()`), `this`, or
