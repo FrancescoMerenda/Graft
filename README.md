@@ -5,6 +5,7 @@
 ### Turbocharge Claude Code, Cursor, Codex, Gemini & every coding agent: faster, cheaper, with contextual understanding specific to your codebase.
 
 <p>
+  <a href="https://github.com/NanoNets/Graft"><img src="https://img.shields.io/github/stars/NanoNets/Graft?style=for-the-badge&logo=github&logoColor=white&label=Star%20on%20GitHub&color=FFC83D" /></a>
   <a href="https://graft.nanonets.ai"><img src="https://img.shields.io/badge/website-graft.nanonets.ai-546FFF?style=for-the-badge" /></a>
   <a href="https://discord.gg/zxmKweAA29"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white" /></a>
   <a href="https://www.npmjs.com/package/@nanonets/graft"><img src="https://img.shields.io/npm/v/%40nanonets%2Fgraft?style=for-the-badge&logo=npm&logoColor=white&label=npm" /></a>
@@ -20,7 +21,7 @@
 
 | Metric | Cold Claude Code | Claude Code with graft |
 |---|---|---|
-| Tool-call savings | Baseline | **+46%** |
+| Tool-call reduction | Baseline | **+46%** |
 | Token savings | Baseline | **+42%** |
 | Time savings | Baseline | **+60%** |
 | Correctness | 54% | **66% (+12 pts)** |
@@ -30,7 +31,7 @@
 </div>
 
 <p align="center">
-  <img src="assets/graft-terminal.png" alt="Two commands — npm install and graft init — then Graft rides along in a Claude Code session, statusline synced" width="820"/>
+  <img src="assets/graft-comparison-demo.gif" alt="Side-by-side comparison of a coding agent working with and without graft" width="820"/>
 </p>
 
 ---
@@ -74,6 +75,10 @@ git add .claude && git commit -m "wire in graft"
 ```
 
 Prefer not to install globally? `npx @nanonets/graft init` works the same way.
+
+<p align="center">
+  <img src="assets/graft-terminal.png" alt="Two commands — npm install and graft init — then Graft rides along in a Claude Code session, statusline synced" width="820"/>
+</p>
 
 ---
 
@@ -277,6 +282,11 @@ Where a CLI agent supports user-level `hooks.json`, `init` also installs Graft's
 - **a live statusline** — graph size, % enriched, and a `⚠ N stale` warning when the code has moved ahead of the graph
 - **auto-sync** — every graft query brings the graph up to date first, so an answer always describes the code as it is right now, uncommitted edits included. A query refreshes only what it reads; the markdown under `graft/` is refreshed by the background rebuild at the end of a turn that touched code. Both are structural and `$0` — auto-sync never calls the LLM on its own
 - **context on tap** — each prompt pulls the matching nodes into the session; editing a file surfaces what depends on it ("blast radius"); new sessions start with the repo map
+
+<p align="center">
+  <img src="assets/graft-hooks-demo.gif" alt="How Claude Code hooks wire graft in: install, graft init, then the hooks loop (session start, user prompt, post tool use, stop) keeps the graph built, read, and committed automatically" width="820"/>
+  <br/><sub>install → init → hooks keep the graph fresh every session</sub>
+</p>
 
 <p align="center">
   <img src="assets/graft-hook-blast-radius-demo.gif" alt="graft's post-edit hook: editing node-file.ts prints its blast radius (who depends on it) inline, the statusline flips stale → syncing → synced on its own, and the same dependents light up in graft viz" width="820"/>
