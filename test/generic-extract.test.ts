@@ -115,6 +115,36 @@ for (const s of SNIPPETS) {
   });
 }
 
+// Structural references the grammar already marks — a supertype (extends), an
+// implemented interface, an object creation — become `references` edges the resolver
+// settles to a type-like definition. This is the breadth-tier orphan-rate fix: a class
+// that is only ever extended or instantiated (never "called") stops being disconnected.
+test("breadth tier: Java extends/implements/new become resolved references edges (precision-safe)", async () => {
+  await warmGenericGrammars(["java"]);
+  const src =
+    `interface Animal {}\n` +
+    `class Base {}\n` +
+    `class Dog extends Base implements Animal {\n` +
+    `  Base make() { return new Base(); }\n` +
+    `}\n` +
+    `class Cat extends UnknownExternal {}\n`; // external supertype → must be dropped, never guessed
+  const { nodes, rawEdges } = extractGeneric("A.java", src, "java");
+  const edges = resolveEdges(nodes, rawEdges);
+  const refs = edges.filter((e) => e.relation === "references");
+  const pairs = refs.map((e) => `${e.source.split("#")[1]}→${e.target.split("#")[1] ?? e.target}`);
+
+  // extends + implements are attributed to the declaring class; `new Base()` to the method
+  assert.ok(pairs.includes("Dog→Base"), `Dog extends Base (got ${pairs.join(", ")})`);
+  assert.ok(pairs.includes("Dog→Animal"), "Dog implements Animal");
+  assert.ok(pairs.includes("make→Base"), "make() references Base via `new Base()`");
+  // same-file targets resolve as certain
+  assert.ok(refs.every((e) => e.confidence === "extracted"), "same-file references are extracted");
+  // an external/undefined supertype is dropped, not emitted as a bogus edge
+  assert.ok(!refs.some((e) => e.target.includes("UnknownExternal")), "unresolved external type is dropped");
+  // no self-loops (a class referencing its own name never becomes X→X)
+  assert.ok(!refs.some((e) => e.source === e.target), "no self-loop references");
+});
+
 test("buildGraph + checkGraph handle a breadth-tier (.rs) repo end-to-end", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-rust-"));
   mkdirSync(join(dir, "src"), { recursive: true });
