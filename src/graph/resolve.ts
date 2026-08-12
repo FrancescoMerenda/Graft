@@ -2,7 +2,7 @@
  * Resolve {@link RawEdge} intents into concrete {@link EdgeV1} edges by matching
  * names/specifiers against the whole-repo node index.
  *
- * Confidence mirrors the SCIP/Graphify model:
+ * Confidence is a two-tier provenance model:
  *   - `extracted`: the target is certain — a match within the same file, an
  *     import specifier, or a structural containment.
  *   - `inferred`: a bare function target was resolved by a unique name match
@@ -131,17 +131,29 @@ export function resolveEdges(
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
         if (hit) add(e.source, hit.id, "calls", hit.confidence);
         // No owner-qualified match means the call is unresolved. A unique bare
-        // method name is not evidence that this receiver has that method.
+        // method name is not evidence that this receiver has that method — a
+        // name-fallback here was measured to HALVE call-edge precision (73%→37%
+        // vs a compiler-grade oracle) for a 3x count inflation, i.e. noise. See #35.
         continue;
       }
-      // Java emits only one kind of non-member call: `new Foo()`, whose target is a
-      // TYPE, not a function (Java has no free functions — an implicit-`this` call is
-      // spelled as a member call in extract.ts). Resolving it against the function
-      // index would drop every constructor edge.
-      const kinds: Kind[] = e.file.endsWith(".java")
-        ? ["class", "struct", "enum", "interface"]
-        : ["function"];
-      const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
+      // Three cases, because "a bare call" means something different per tier:
+      //
+      //  - generic (breadth tier): tags.scm captures ALL calls as bare names, since it
+      //    cannot type a receiver. In method-heavy languages those target methods, so
+      //    widen to methods — ONLY here, leaving depth-tier precision untouched (an
+      //    ambiguous function-vs-method name still drops).
+      //  - Java (depth tier): an implicit-`this` call is spelled as a member call in
+      //    extract.ts, so the only bare call reaching here is `new Foo()`, whose target
+      //    is a TYPE. Against the function index every constructor edge would drop.
+      //  - everything else: functions, exactly as before.
+      const srcOrigin = byId.get(e.source)?.origin;
+      const callKinds: Kind[] =
+        srcOrigin === "generic"
+          ? ["function", "method"]
+          : e.file.endsWith(".java")
+            ? ["class", "struct", "enum", "interface"]
+            : ["function"];
+      const hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }
   }

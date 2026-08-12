@@ -138,6 +138,7 @@ program
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py")')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
+  .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option(
     "--include-dir <name>",
     "override SKIP_DIRS for this repo's walks — repeatable (e.g. --include-dir build --include-dir tools); " +
@@ -145,7 +146,7 @@ program
     (val: string, prev: string[]) => [...prev, val],
     [] as string[],
   )
-  .action(async (dir: string, opts: { deep?: boolean; extensions?: string[]; concurrency?: string; reuse?: boolean; includeDir?: string[] }) => {
+  .action(async (dir: string, opts: { deep?: boolean; extensions?: string[]; concurrency?: string; reuse?: boolean; lsp?: boolean; includeDir?: string[] }) => {
     const concurrency = opts.concurrency ? Math.max(1, Number(opts.concurrency)) : undefined;
     if (opts.concurrency && !Number.isFinite(concurrency)) {
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
@@ -232,6 +233,7 @@ program
       llm: deep,
       concurrency,
       reuse: opts.reuse,
+      lsp: opts.lsp,
       onProgress: ({ phase, index, total, file }) =>
         process.stderr.write(
           `\r${phase === "enrich" ? "summarizing" : "parsing"} ${index + 1}/${total}: ${file.slice(0, 50).padEnd(50)}`,
@@ -263,8 +265,9 @@ program
   .option("--full", "with --source: inline whole definition spans instead of the default ≤8-line crux excerpts")
   .option("--in <path>", "narrow to nodes under this path prefix, filtered before scoring (segment-aware, like scopeOf)")
   .option("--json", "output the result as JSON")
+  .option("--no-graph-rank", "rank by lexical relevance only, without the graph-connectivity re-rank (ablation/eval)")
   .option(...NO_REFRESH_FLAG)
-  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean }) => {
+  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean; graphRank?: boolean }) => {
     const dir = queryRoot(dirArg);
     await refreshBefore(dir, opts);
     const askGlobalDir = program.opts<GlobalOpts>().dir;
@@ -277,7 +280,7 @@ program
     const engine = engineFrom();
     let r;
     try {
-      r = engine.ask(dir, query, { limit: Number(opts.limit), source: opts.source, full: opts.full, in: opts.in });
+      r = engine.ask(dir, query, { limit: Number(opts.limit), source: opts.source, full: opts.full, in: opts.in, graphRank: opts.graphRank });
     } catch (err) {
       console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -314,16 +317,16 @@ program
   .argument(...DIR_ARG)
   .option("-e, --extensions <exts...>", "code extensions to include")
   .option("--json", "output the drift as JSON")
-  .action((dirArg: string | undefined, opts: { extensions?: string[]; json?: boolean }) => {
+  .action(async (dirArg: string | undefined, opts: { extensions?: string[]; json?: boolean }) => {
     const dir = queryRoot(dirArg);
     const checkGlobalDir = program.opts<GlobalOpts>().dir;
     if (readWorkspace(dir, checkGlobalDir)) {
-      runWorkspaceCheck(dir, checkGlobalDir);
+      await runWorkspaceCheck(dir, checkGlobalDir);
       return;
     }
     const engine = engineFrom();
     const r = engine.check(dir, { extensions: opts.extensions });
-    const g = engine.checkGraph(dir); // graph.json is only judged when it exists
+    const g = await engine.checkGraph(dir); // graph.json is only judged when it exists
 
     // A layer that IS present must be in sync; a never-built layer (keyless
     // build skips the markdown layer) is informational, not a failure.

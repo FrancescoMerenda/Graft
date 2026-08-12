@@ -375,15 +375,15 @@ export function federateMap(
 
 /** Per-child drift status. `ok` is false when any BUILT child is stale — an
  * unbuilt child is surfaced (coverage), never a failure. */
-export function federateCheck(
+export async function federateCheck(
   root: string,
   override?: string,
-): { text: string; ok: boolean } {
+): Promise<{ text: string; ok: boolean }> {
   const wg = loadWorkspaceGraphs(root, override);
   const lines = [`workspace check — ${wg.loaded.length + wg.missing.length} repo(s)`, ""];
   let ok = true;
   for (const { child } of wg.loaded) {
-    const g = checkGraph(join(root, child));
+    const g = await checkGraph(join(root, child));
     if (g.ok) {
       lines.push(`${child}/: OK`);
     } else {

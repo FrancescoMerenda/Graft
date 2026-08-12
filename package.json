@@ -64,7 +64,11 @@
     "tree-sitter-go": "^0.23.4",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-python": "^0.21.0",
-    "tree-sitter-typescript": "^0.23.2"
+    "tree-sitter-typescript": "^0.23.2",
+    "tree-sitter-wasms": "^0.1.13",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.18.2",
+    "web-tree-sitter": "^0.25.10"
   },
   "devDependencies": {
     "@types/d3-force": "^3.0.10",
