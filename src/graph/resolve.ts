@@ -47,12 +47,24 @@ export function resolveEdges(
   const ownerMethod = new Map<string, NodeV1[]>();
   // Go package resolution: dir (posix) → its `.go` file node ids, for import mapping.
   const goFilesByDir = new Map<string, string[]>();
+  // Java package resolution: a file's package-path suffix (`com/acme/Foo.java`) → its
+  // file node ids. A Java import names a type by its fully-qualified name, which by
+  // language convention mirrors the directory path under whatever source root the
+  // project uses (`src/main/java/`, `src/`, …) — so the suffix is the portable key.
+  const javaFilesBySuffix = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
       if (hasGoModules && n.path.endsWith(".go")) {
         const dir = posix.dirname(toPosixPath(n.path));
         push(goFilesByDir, dir, n.id);
+      }
+      if (n.path.endsWith(".java")) {
+        // Index every directory-boundary suffix, since the source root is unknown:
+        // `src/main/java/com/acme/Foo.java` is reachable as `com/acme/Foo.java`,
+        // `acme/Foo.java`, and so on. The import's own FQN picks the right depth.
+        const parts = toPosixPath(n.path).split("/");
+        for (let i = 0; i < parts.length; i++) push(javaFilesBySuffix, parts.slice(i).join("/"), n.id);
       }
       continue;
     }
@@ -95,7 +107,9 @@ export function resolveEdges(
       const target =
         hasGoModules && e.file.endsWith(".go")
           ? resolveGoImport(e.specifier, opts.goModules!, goFilesByDir)
-          : resolveImport(e.specifier, e.file, byId);
+          : e.file.endsWith(".java")
+            ? resolveJavaImport(e.specifier, javaFilesBySuffix)
+            : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       const kinds: Kind[] = e.relation === "implements" ? ["interface"] : ["class", "interface"];
@@ -124,7 +138,7 @@ export function resolveEdges(
     } else if (e.relation === "calls") {
       if (e.viaMember) {
         if (!e.recvType) continue;
-        const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents);
+        const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, e.argCount);
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
         if (hit) add(e.source, hit.id, "calls", hit.confidence);
         // No owner-qualified match means the call is unresolved. A unique bare
@@ -133,14 +147,23 @@ export function resolveEdges(
         // vs a compiler-grade oracle) for a 3x count inflation, i.e. noise. See #35.
         continue;
       }
-      // Depth-tier bare calls are function calls (method calls arrive as viaMember
-      // with a receiver type). The generic breadth tier can't type receivers, so its
-      // tags.scm @reference.call/@reference.send capture ALL calls as bare names —
-      // in method-heavy languages (Java, Ruby, C#) those target methods. Widen the
-      // candidate kinds to methods ONLY for generic-origin sources, so depth-tier
-      // precision is untouched (an ambiguous function-vs-method name still drops).
+      // Three cases, because "a bare call" means something different per tier:
+      //
+      //  - generic (breadth tier): tags.scm captures ALL calls as bare names, since it
+      //    cannot type a receiver. In method-heavy languages those target methods, so
+      //    widen to methods — ONLY here, leaving depth-tier precision untouched (an
+      //    ambiguous function-vs-method name still drops).
+      //  - Java (depth tier): an implicit-`this` call is spelled as a member call in
+      //    extract.ts, so the only bare call reaching here is `new Foo()`, whose target
+      //    is a TYPE. Against the function index every constructor edge would drop.
+      //  - everything else: functions, exactly as before.
       const srcOrigin = byId.get(e.source)?.origin;
-      const callKinds: Kind[] = srcOrigin === "generic" ? ["function", "method"] : ["function"];
+      const callKinds: Kind[] =
+        srcOrigin === "generic"
+          ? ["function", "method"]
+          : e.file.endsWith(".java")
+            ? ["class", "struct", "enum", "interface"]
+            : ["function"];
       const hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }
@@ -185,20 +208,45 @@ function resolveName(
  *   - `null` — the whole chain (recvType + ancestors, breadth-first, depth ≤ 3,
  *     cycle-guarded) had zero candidates at every level.
  */
+/**
+ * Narrow an overload set to the candidates a call of `argCount` arguments could
+ * reach. Only Java emits `argCount`/`arity`, so for every other language this is
+ * the identity function and resolution is byte-for-byte what it was.
+ *
+ * Deliberately conservative in both directions:
+ *   - A variadic candidate (`String... xs`) accepts anything from `arity - 1`
+ *     upward, so it is never filtered out by count.
+ *   - A candidate with no recorded arity (a graph built before this field) is
+ *     kept, since absence of data is not evidence of a mismatch.
+ *   - If narrowing leaves nothing, the ORIGINAL set is returned. An empty result
+ *     would silently drop a real edge; handing the full set back lets the existing
+ *     same-file / "ambiguous" logic make the call exactly as before.
+ */
+function narrowByArity(candidates: NodeV1[], argCount?: number): NodeV1[] {
+  if (argCount === undefined || candidates.length < 2) return candidates;
+  const fits = candidates.filter((c) => {
+    if (c.arity === undefined) return true;
+    return c.variadic ? argCount >= c.arity - 1 : c.arity === argCount;
+  });
+  return fits.length > 0 ? fits : candidates;
+}
+
 function resolveTypedMember(
   recvType: string,
   name: string,
   file: string,
   ownerMethod: Map<string, NodeV1[]>,
   classParents: Map<string, string[]>,
+  argCount?: number,
 ): { id: string; confidence: EdgeV1["confidence"] } | "ambiguous" | null {
   const MAX_DEPTH = 3;
   const visited = new Set<string>([recvType]);
   let frontier = [recvType];
   for (let depth = 0; depth <= MAX_DEPTH && frontier.length; depth++) {
     for (const type of frontier) {
-      const candidates = ownerMethod.get(`${type}.${name}`);
-      if (!candidates || candidates.length === 0) continue; // try next ancestor
+      const all = ownerMethod.get(`${type}.${name}`);
+      if (!all || all.length === 0) continue; // try next ancestor
+      const candidates = narrowByArity(all, argCount);
       if (candidates.length === 1) {
         const c = candidates[0];
         return { id: c.id, confidence: c.path === file ? "extracted" : "inferred" };
@@ -237,6 +285,40 @@ function resolveImport(spec: string, file: string, byId: Map<string, NodeV1>): s
     ...IMPORT_EXTS.map((e) => `${noExt}/index${e}`),
   ];
   for (const c of candidates) if (byId.has(c)) return c;
+  return spec;
+}
+
+/**
+ * Resolve a Java import's fully-qualified type name to an in-repo file node;
+ * otherwise return the raw specifier (JDK or third-party type).
+ *
+ * Java names a *type*, not a path, and states no source root — `com.acme.Foo` may
+ * live under `src/main/java/`, `src/`, or a module dir. Matching on the path SUFFIX
+ * (`com/acme/Foo.java`) is therefore root-agnostic and needs no build-file parsing,
+ * which is what keeps this deterministic and dependency-free.
+ *
+ * `import static com.acme.Foo.bar` names a member, so when the full name misses, the
+ * last segment is dropped and the enclosing type retried. A wildcard (`com.acme.*`)
+ * names a package rather than one file and is deliberately left unresolved: picking a
+ * representative would invent an edge the source does not state.
+ *
+ * A suffix shared by two files (the same FQN under two source roots, e.g. a
+ * duplicated test tree) is ambiguous, so it stays unresolved rather than guessing.
+ */
+function resolveJavaImport(spec: string, filesBySuffix: Map<string, string[]>): string {
+  const hit = (fqn: string): string | null => {
+    const suffix = `${fqn.split(".").join("/")}.java`;
+    const files = filesBySuffix.get(suffix);
+    return files && files.length === 1 ? files[0] : null;
+  };
+  const direct = hit(spec);
+  if (direct) return direct;
+  // `import static a.b.C.member` → retry as `a.b.C`.
+  const dot = spec.lastIndexOf(".");
+  if (dot > 0) {
+    const enclosing = hit(spec.slice(0, dot));
+    if (enclosing) return enclosing;
+  }
   return spec;
 }
 
