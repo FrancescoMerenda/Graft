@@ -148,12 +148,12 @@ function renderMatches(
  * map/check tools federate across the children — identical to the CLI. Returns
  * null for tools that don't federate (skeleton is per-file), so the caller
  * falls through to the normal single-graph path. */
-function callWorkspaceTool(
+async function callWorkspaceTool(
   root: string,
   dirOverride: string | undefined,
   name: string,
   args: Record<string, unknown>,
-): { text: string; isError: boolean } | null {
+): Promise<{ text: string; isError: boolean } | null> {
   switch (name) {
     case 'graft_find_code': {
       const query = String(args.query ?? '');
@@ -188,7 +188,7 @@ function callWorkspaceTool(
       return { text: federateMap(root, dirOverride, { maxDirs }), isError: false };
     }
     case 'graft_check_freshness': {
-      const { text } = federateCheck(root, dirOverride);
+      const { text } = await federateCheck(root, dirOverride);
       return { text, isError: false };
     }
     default:
@@ -244,8 +244,8 @@ export async function callTool(
         : await ensureFreshGraph(root, { contextDir: dirOverride });
       note = refreshNote(r);
     }
-    const fed = ws ? callWorkspaceTool(root, dirOverride, name, args) : null;
-    const res = fed ?? callSingleTool(root, name, args, dirOverride);
+    const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;
+    const res = fed ?? (await callSingleTool(root, name, args, dirOverride));
     return note ? { ...res, text: `${note}\n${res.text}` } : res;
   } catch (err) {
     return { text: err instanceof Error ? err.message : String(err), isError: true };
@@ -253,12 +253,12 @@ export async function callTool(
 }
 
 /** The single-graph path: every tool, answered from one repo's graph. */
-function callSingleTool(
+async function callSingleTool(
   root: string,
   name: string,
   args: Record<string, unknown>,
   dirOverride?: string,
-): { text: string; isError: boolean } {
+): Promise<{ text: string; isError: boolean }> {
   switch (name) {
       case 'graft_find_code': {
         const query = String(args.query ?? '');
@@ -278,7 +278,7 @@ function callSingleTool(
       case 'graft_check_freshness': {
         const engine = new Graft({ contextDir: dirOverride });
         const r = engine.check(root);
-        const g = engine.checkGraph(root);
+        const g = await engine.checkGraph(root);
         const parts = [formatCheckReport(r)];
         if (!g.missing) parts.push(formatGraphCheckReport(g));
         return { text: parts.join('\n\n'), isError: false };
