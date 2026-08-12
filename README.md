@@ -17,7 +17,7 @@
   <a href="https://scorecard.dev/viewer/?uri=github.com/NanoNets/Graft"><img src="https://img.shields.io/ossf-scorecard/github.com/NanoNets/Graft?style=for-the-badge&label=openssf%20scorecard" /></a>
 </p>
 
-### Up to **2× cheaper** and **2.5× faster**, with better or no loss of correctness.
+### Up to **4× cheaper** and **3× faster**, with better or no loss of correctness.
 
 | Metric | Cold Claude Code | Claude Code with graft |
 |---|---|---|
