@@ -102,14 +102,25 @@ export function resolveEdges(
       const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
       // an unresolved base is usually an external/imported type — keep the name.
       add(e.source, hit?.id ?? e.name!, e.relation, hit?.confidence ?? "inferred");
-    } else if (e.relation === "references" && e.name && e.specifier) {
-      // A named import gives both halves needed for sound resolution: the module
-      // it came from and the exported name. Resolve inside that file only, so a
-      // same-named symbol elsewhere in the repo cannot become a false edge.
-      const targetFile = resolveImport(e.specifier, e.file, byId);
-      if (!byId.has(targetFile)) continue; // external or unresolved module
-      const candidates = perFileName.get(targetFile)?.get(e.name) ?? [];
-      if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
+    } else if (e.relation === "references" && e.name) {
+      if (e.specifier) {
+        // A named import gives both halves needed for sound resolution: the module
+        // it came from and the exported name. Resolve inside that file only, so a
+        // same-named symbol elsewhere in the repo cannot become a false edge.
+        const targetFile = resolveImport(e.specifier, e.file, byId);
+        if (!byId.has(targetFile)) continue; // external or unresolved module
+        const candidates = perFileName.get(targetFile)?.get(e.name) ?? [];
+        if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
+      } else if (byId.get(e.source)?.origin === "generic") {
+        // Breadth tier: a bare-name structural reference (extends / implements /
+        // object-creation / module alias) the grammar marked but cannot type. Resolve
+        // to a type-like definition, drop-rather-than-guess, never a self-loop. Gated on
+        // generic origin so depth-tier references (which always carry a specifier) are
+        // provably untouched.
+        const refKinds: Kind[] = ["class", "interface", "struct", "enum", "type", "module"];
+        const hit = resolveName(e.name, e.file, refKinds, perFileName, globalName);
+        if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
+      }
     } else if (e.relation === "calls") {
       if (e.viaMember) {
         if (!e.recvType) continue;

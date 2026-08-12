@@ -235,6 +235,7 @@ function tagsExtract(
   // producing bogus self-loops (foo→foo). Skip any call at a definition's name token.
   const defNameAt = new Set<number>();
   const calls: Array<{ name: string; at: number }> = [];
+  const refs: Array<{ name: string; at: number }> = [];
   for (const m of matches) {
     const cap: Record<string, TsNode> = {};
     for (const c of m.captures) cap[c.name] = c.node;
@@ -245,13 +246,32 @@ function tagsExtract(
     }
     if (("reference.call" in cap || "reference.send" in cap) && cap.name)
       calls.push({ name: cap.name.text, at: cap.name.startIndex });
+    // Structural references the grammar already marks: a supertype (extends), an
+    // implemented interface, an object creation (`new Foo`), a module alias. Grammars
+    // label these @reference.class/.interface/.implementation/.module — heterogeneous
+    // syntactically but all "names this symbol without calling it". They become
+    // `references` edges the same precision-first resolver settles to a type-like def
+    // (same-file certain, unique cross-file inferred, ambiguous dropped), so a data
+    // class that's only ever extended or instantiated stops being an orphan.
+    if (("reference.class" in cap || "reference.interface" in cap ||
+         "reference.implementation" in cap || "reference.module" in cap) && cap.name)
+      refs.push({ name: cap.name.text, at: cap.name.startIndex });
   }
+  // innermost enclosing definition of a token at byte offset `at`
+  const enclosing = (at: number) =>
+    defs
+      .filter((d) => d.startIndex <= at && at < d.endIndex)
+      .sort((a, b) => (a.endIndex - a.startIndex) - (b.endIndex - b.startIndex))[0];
   for (const c of calls) {
     if (defNameAt.has(c.at)) continue;
-    const enc = defs
-      .filter((d) => d.startIndex <= c.at && c.at < d.endIndex)
-      .sort((a, b) => (a.endIndex - a.startIndex) - (b.endIndex - b.startIndex))[0];
+    const enc = enclosing(c.at);
     rawEdges.push({ source: enc ? enc.id : rel, relation: "calls", file: rel, name: c.name });
+  }
+  for (const r of refs) {
+    if (defNameAt.has(r.at)) continue;
+    const enc = enclosing(r.at);
+    if (!enc) continue; // a reference with no enclosing definition has no sound source
+    rawEdges.push({ source: enc.id, relation: "references", file: rel, name: r.name });
   }
 }
 
