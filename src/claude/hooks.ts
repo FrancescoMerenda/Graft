@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join, basename } from 'node:path';
+import { join, basename, isAbsolute } from 'node:path';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, relevantRetrieval, formatOrientation } from './format.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
@@ -104,8 +104,31 @@ function emit(eventName: string, additionalContext: string): void {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: eventName, additionalContext } }));
 }
 
+/**
+ * The absolute path of the file a PostToolUse edit touched, across host edit-tool
+ * shapes:
+ *   - Claude Code (`Write`/`Edit`/`MultiEdit`) states it directly as
+ *     `tool_input.file_path` (already absolute).
+ *   - Codex (`apply_patch`) carries the whole patch in `tool_input.command` and
+ *     names the file in the patch header (`*** Add File:` / `*** Update File:`),
+ *     as a repo-relative path — resolved against `dir` here. Take the first
+ *     Add/Update target; that one file is enough to mark the graph dirty and
+ *     draw a blast radius (the sync re-checks the whole tree anyway).
+ * Returns null when neither shape yields a path, so the hook stays a clean no-op.
+ */
+export function editedFilePath(input: any, dir: string): string | null {
+  const direct = input?.tool_input?.file_path;
+  if (typeof direct === 'string' && direct.trim()) return direct;
+  const cmd = input?.tool_input?.command;
+  if (typeof cmd === 'string' && cmd) {
+    const m = /^\*\*\*\s+(?:Add|Update)\s+File:\s+(.+?)\s*$/m.exec(cmd);
+    if (m) return isAbsolute(m[1]) ? m[1] : join(dir, m[1]);
+  }
+  return null;
+}
+
 async function handlePostEdit(input: any, dir: string): Promise<void> {
-  const file: string | undefined = input?.tool_input?.file_path;
+  const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
   patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
   const w = readWiring(dir);
