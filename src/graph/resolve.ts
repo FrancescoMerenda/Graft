@@ -18,6 +18,8 @@ import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
 import type { RawEdge } from "./extract.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
+/** C/C++ source + header extensions, for resolving `#include` targets. */
+const C_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|inl|ipp|c\+\+|h\+\+)$/i;
 
 /** A Go module discovered in the repo: its `module` path from `go.mod` and the repo
  * directory that `go.mod` lives in (posix, `.` for the repo root). A monorepo may hold
@@ -52,6 +54,10 @@ export function resolveEdges(
   // language convention mirrors the directory path under whatever source root the
   // project uses (`src/main/java/`, `src/`, …) — so the suffix is the portable key.
   const javaFilesBySuffix = new Map<string, string[]>();
+  // C/C++ header resolution: a file's path-suffix (`net/socket.h`, `socket.h`) → its
+  // file node ids, so an `#include` reached through an `-I` dir (not relative to the
+  // including file) still resolves to the in-repo header when the suffix is unique.
+  const cFilesBySuffix = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
@@ -65,6 +71,10 @@ export function resolveEdges(
         // `acme/Foo.java`, and so on. The import's own FQN picks the right depth.
         const parts = toPosixPath(n.path).split("/");
         for (let i = 0; i < parts.length; i++) push(javaFilesBySuffix, parts.slice(i).join("/"), n.id);
+      }
+      if (C_EXT.test(n.path)) {
+        const parts = toPosixPath(n.path).split("/");
+        for (let i = 0; i < parts.length; i++) push(cFilesBySuffix, parts.slice(i).join("/"), n.id);
       }
       continue;
     }
@@ -109,7 +119,9 @@ export function resolveEdges(
           ? resolveGoImport(e.specifier, opts.goModules!, goFilesByDir)
           : e.file.endsWith(".java")
             ? resolveJavaImport(e.specifier, javaFilesBySuffix)
-            : resolveImport(e.specifier, e.file, byId);
+            : C_EXT.test(e.file)
+              ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
+              : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       const kinds: Kind[] = e.relation === "implements" ? ["interface"] : ["class", "interface"];
@@ -320,6 +332,27 @@ function resolveJavaImport(spec: string, filesBySuffix: Map<string, string[]>): 
     if (enclosing) return enclosing;
   }
   return spec;
+}
+
+/**
+ * Resolve a C/C++ `#include "path"` to an in-repo file node: relative to the including
+ * file first (the common case, and certain), else a UNIQUE path-suffix match — which
+ * covers a header reached through an `-I` include directory rather than a relative path.
+ * Anything ambiguous or not found stays the raw path (a system or out-of-repo header),
+ * never a guessed edge.
+ */
+function resolveCInclude(
+  spec: string,
+  file: string,
+  byId: Map<string, NodeV1>,
+  bySuffix: Map<string, string[]>,
+): string {
+  const dir = posix.dirname(toPosixPath(file));
+  const relJoin = posix.normalize(posix.join(dir, spec));
+  if (byId.has(relJoin)) return relJoin; // relative to the including file — certain
+  const hits = bySuffix.get(spec.replace(/^\.?\//, ""));
+  if (hits && hits.length === 1) return hits[0]; // unique suffix — an -I-reached header
+  return spec; // system/out-of-repo/ambiguous — keep the string, do not guess
 }
 
 /**

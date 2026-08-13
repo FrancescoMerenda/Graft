@@ -145,6 +145,41 @@ test("breadth tier: Java extends/implements/new become resolved references edges
   assert.ok(!refs.some((e) => e.source === e.target), "no self-loop references");
 });
 
+// C/C++ #include is the dependency graph the tags.scm can't see (it's the
+// preprocessor). A local `#include "x.h"` becomes a file→file import the resolver
+// settles to an in-repo header — relative first, then a unique path-suffix (an
+// -I-reached header), and never a guess. System `<...>` includes are skipped.
+test("breadth tier: C #include becomes a resolved file→file import (local only, drop-rather-than-guess)", async () => {
+  await warmGenericGrammars(["c"]);
+  const files: Record<string, string> = {
+    "src/app.c": '#include "app.h"\n#include "net/sock.h"\n#include <stdio.h>\nint run(void){return 0;}\n',
+    "src/app.h": "int run(void);\n",
+    "src/net/sock.h": "int connect_sock(void);\n",
+    "include/uniq.h": "int uq(void);\n", // reachable only via -I, unique basename
+    "src/uses.c": '#include "uniq.h"\n',
+    "a/util.h": "int a_u(void);\n", // two util.h → an ambiguous basename
+    "b/util.h": "int b_u(void);\n",
+    "src/amb.c": '#include "util.h"\n',
+  };
+  const nodes = [], raw = [];
+  for (const [rel, src] of Object.entries(files)) {
+    const r = extractGeneric(rel, src, "c");
+    nodes.push(...r.nodes); raw.push(...r.rawEdges);
+  }
+  const imports = resolveEdges(nodes, raw).filter((e) => e.relation === "imports");
+  const targetsOf = (src: string) => imports.filter((e) => e.source === src).map((e) => e.target);
+
+  // relative include → the in-repo header (exact; same dir and a subdir)
+  assert.ok(targetsOf("src/app.c").includes("src/app.h"), "app.c → app.h (same dir)");
+  assert.ok(targetsOf("src/app.c").includes("src/net/sock.h"), "app.c → net/sock.h (subdir)");
+  // system <stdio.h> is skipped entirely — no import edge minted
+  assert.ok(!imports.some((e) => String(e.target).includes("stdio")), "system include is not captured");
+  // a unique basename reached via -I resolves by suffix
+  assert.ok(targetsOf("src/uses.c").includes("include/uniq.h"), "unique -I header resolves by suffix");
+  // an ambiguous basename is NOT guessed — kept as the raw string, resolving to neither file
+  assert.deepEqual(targetsOf("src/amb.c"), ["util.h"], "ambiguous include kept external, never guessed");
+});
+
 test("buildGraph + checkGraph handle a breadth-tier (.rs) repo end-to-end", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-rust-"));
   mkdirSync(join(dir, "src"), { recursive: true });

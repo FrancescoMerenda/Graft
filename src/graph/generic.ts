@@ -215,7 +215,32 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   } else {
     walkExtract(tree.rootNode as TsNode, mkDef); // no tags.scm → symbols only
   }
+  // The preprocessor is invisible to tags.scm, but in C/C++ a local `#include "x.h"`
+  // IS the dependency graph — capture it as a file→file import.
+  if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
   return { nodes, rawEdges };
+}
+
+/** C/C++ `#include "header.h"` → a file→file `imports` raw edge. Only LOCAL includes
+ * (quoted) are captured; system includes (`<stdio.h>`) are skipped — high volume, and
+ * there is no in-repo target to navigate to. resolve.ts settles the quoted path to an
+ * in-repo header (relative to the including file, else a unique path-suffix match), and
+ * keeps it as an external string when it cannot — never a guessed edge. */
+function extractIncludes(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
+  const visit = (n: TsNode): void => {
+    if (n.type === "preproc_include") {
+      const raw = n.childForFieldName?.("path")?.text ?? "";
+      if (raw.startsWith('"')) {
+        const spec = raw.replace(/^"|"$/g, "").trim();
+        if (spec) rawEdges.push({ source: rel, relation: "imports", specifier: spec, file: rel });
+      }
+    }
+    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
+      const c = n.namedChild?.(i);
+      if (c) visit(c);
+    }
+  };
+  visit(root);
 }
 
 /** tags.scm path: @definition.<kind> → nodes, @reference.call/@reference.send →
