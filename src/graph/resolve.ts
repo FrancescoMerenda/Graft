@@ -62,6 +62,10 @@ export function resolveEdges(
   // resolves to `<crate root>/a/b.rs` (or `.../a/b/mod.rs`), relative to the crate the
   // importing file belongs to — so a workspace with several crates stays unambiguous.
   const rustCrateRoots: string[] = [];
+  // PHP class resolution: a file's path-suffix (`Models/User.php`, `User.php`) → its file
+  // node ids. A `use App\Models\User` names a PSR-4 class whose file mirrors the namespace
+  // tail under some (unknown) source root, so the suffix is the portable key.
+  const phpFilesBySuffix = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
@@ -79,6 +83,10 @@ export function resolveEdges(
       if (C_EXT.test(n.path)) {
         const parts = toPosixPath(n.path).split("/");
         for (let i = 0; i < parts.length; i++) push(cFilesBySuffix, parts.slice(i).join("/"), n.id);
+      }
+      if (n.path.endsWith(".php")) {
+        const parts = toPosixPath(n.path).split("/");
+        for (let i = 0; i < parts.length; i++) push(phpFilesBySuffix, parts.slice(i).join("/"), n.id);
       }
       {
         const p = toPosixPath(n.path);
@@ -132,7 +140,9 @@ export function resolveEdges(
               ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
               : e.file.endsWith(".rs")
                 ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
-                : resolveImport(e.specifier, e.file, byId);
+                : e.file.endsWith(".php")
+                  ? resolvePhpUse(e.specifier, phpFilesBySuffix)
+                  : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       const kinds: Kind[] = e.relation === "implements" ? ["interface"] : ["class", "interface"];
@@ -364,6 +374,25 @@ function resolveCInclude(
   const hits = bySuffix.get(spec.replace(/^\.?\//, ""));
   if (hits && hits.length === 1) return hits[0]; // unique suffix — an -I-reached header
   return spec; // system/out-of-repo/ambiguous — keep the string, do not guess
+}
+
+/**
+ * Resolve a PHP `use` fully-qualified name (`App\Models\User`) to the in-repo class file.
+ * PSR-4 maps the namespace to a directory under some (unknown) source root and the class
+ * to a `<Class>.php` file, so we match the longest namespace-tail suffix that names exactly
+ * one file: `App/Models/User.php`, then `Models/User.php`, then `User.php`. The longest
+ * unique match wins; an ambiguous tail or a vendor/out-of-repo class stays the raw name.
+ */
+function resolvePhpUse(fqn: string, bySuffix: Map<string, string[]>): string {
+  const parts = fqn.split("\\").filter(Boolean);
+  if (parts.length === 0) return fqn;
+  for (let i = 0; i < parts.length; i++) {
+    const suffix = `${parts.slice(i).join("/")}.php`;
+    const hits = bySuffix.get(suffix);
+    if (hits && hits.length === 1) return hits[0];
+    if (hits && hits.length > 1) break; // ambiguous at the most specific level — do not guess
+  }
+  return fqn;
 }
 
 /**

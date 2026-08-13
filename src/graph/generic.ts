@@ -220,7 +220,41 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   // `use crate::…` is an in-crate module dependency.
   if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
   else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
+  else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
   return { nodes, rawEdges };
+}
+
+/** PHP `use App\Models\User;` → a file→class-file `imports` raw edge, one per imported
+ * name (a `{ … }` group expands to several). `use function`/`use const` are skipped —
+ * those name a symbol, not a PSR-4 class file. resolve.ts settles the fully-qualified
+ * name to the in-repo file by namespace suffix, and drops it when it can't. */
+function extractPhpUses(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
+  const visit = (n: TsNode): void => {
+    if (n.type === "namespace_use_declaration") {
+      for (const fqn of phpUseNames(n.text)) rawEdges.push({ source: rel, relation: "imports", specifier: fqn, file: rel });
+    }
+    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
+      const c = n.namedChild?.(i);
+      if (c) visit(c);
+    }
+  };
+  visit(root);
+}
+
+/** The fully-qualified class names a PHP `use` declaration imports. Handles a plain
+ * `use A\B\C;`, a comma list `use A\B, C\D;`, a group `use A\B\{C, D};`, and `as` aliases;
+ * returns [] for `use function`/`use const` (symbol imports, not class files). */
+function phpUseNames(text: string): string[] {
+  let s = text.replace(/^\s*use\s+/, "").replace(/;\s*$/, "").trim();
+  if (/^(function|const)\b/.test(s)) return [];
+  const brace = s.indexOf("{");
+  if (brace >= 0) {
+    const prefix = s.slice(0, brace).replace(/\\\s*$/, "");
+    const inner = s.slice(brace + 1, s.lastIndexOf("}"));
+    return inner.split(",").map((m) => m.trim().replace(/\s+as\s+\w+$/i, "").trim()).filter(Boolean)
+      .map((m) => `${prefix}\\${m}`);
+  }
+  return s.split(",").map((c) => c.trim().replace(/\s+as\s+\w+$/i, "").trim()).filter(Boolean);
 }
 
 /** Rust `use crate::a::b::Item` → a file→module `imports` raw edge whose specifier is the
