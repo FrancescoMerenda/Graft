@@ -53,6 +53,11 @@ function entryFor(path: string): (typeof EXTENSIONS)[number] | undefined {
   return EXTENSIONS.find((e) => p.endsWith(e.ext));
 }
 
+/** Every file extension a depth-tier (hand-written) extractor claims. */
+export function depthExtensions(): string[] {
+  return EXTENSIONS.map((e) => e.ext);
+}
+
 /** Map a file path to a supported language, or null if unsupported. */
 export function languageOf(path: string): Language | null {
   return entryFor(path)?.grammar ?? null;
