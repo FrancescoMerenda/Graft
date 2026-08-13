@@ -21,6 +21,7 @@ import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
 import { nearestGraftRoot } from "./graph/root.js";
+import { unsupportedExtensions, supportedExtensions } from "./graph/source-files.js";
 import { discoverWorkspaceChildren } from "./graph/scopes.js";
 import {
   runWorkspaceAsk,
@@ -71,6 +72,22 @@ function cliConfig(): EngineConfig {
 }
 
 const engineFrom = (): Graft => new Graft(cliConfig());
+
+/**
+ * Warn (never fail) when a user's `-e` extension has no parser, so it is never a silent
+ * no-op — `graft build -e ".vue"` used to accept it, index nothing, and exit 0. The
+ * supported set is listed so `-e` also answers "what is actually supported".
+ */
+function warnUnsupportedExtensions(exts?: string[]): void {
+  if (!exts?.length) return;
+  const bad = unsupportedExtensions(exts);
+  if (bad.length === 0) return;
+  for (const e of bad) {
+    const shown = e.trim().startsWith(".") ? e.trim() : `.${e.trim()}`;
+    console.error(`⚠ -e "${shown}": no parser registered for this extension — ignoring it.`);
+  }
+  console.error(`  supported: ${supportedExtensions().join(" ")}`);
+}
 
 /** Text for the omitted-`[dir]` case, shared by every query command's help. */
 const DIR_ARG = ["[dir]", "repository root (default: nearest ancestor with a graft/ index)"] as const;
@@ -135,7 +152,7 @@ program
   )
   .argument("[dir]", "repository root", ".")
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
-  .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py")')
+  .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
@@ -152,6 +169,7 @@ program
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
       process.exit(1);
     }
+    warnUnsupportedExtensions(opts.extensions);
     // Persisted BEFORE the build itself runs, so this invocation's walks (and
     // every later no-flag build / hooks refresh) see it identically — the
     // walkDir call sites read it from state, not from a threaded option.
@@ -318,6 +336,7 @@ program
   .option("-e, --extensions <exts...>", "code extensions to include")
   .option("--json", "output the drift as JSON")
   .action(async (dirArg: string | undefined, opts: { extensions?: string[]; json?: boolean }) => {
+    warnUnsupportedExtensions(opts.extensions);
     const dir = queryRoot(dirArg);
     const checkGlobalDir = program.opts<GlobalOpts>().dir;
     if (readWorkspace(dir, checkGlobalDir)) {

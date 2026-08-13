@@ -70,6 +70,11 @@ export function genericLangOf(path: string): GenericLang | null {
   return null;
 }
 
+/** Every file extension a breadth-tier (generic tree-sitter) grammar claims. */
+export function genericExtensions(): string[] {
+  return GENERIC_LANGS.flatMap((l) => l.exts);
+}
+
 // tags.scm @definition.<X>  →  graft Kind (types.ts). Unmapped → "function".
 const KIND: Record<string, Kind> = {
   function: "function", method: "method", class: "class", interface: "interface",
