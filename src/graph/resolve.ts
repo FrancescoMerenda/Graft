@@ -58,6 +58,10 @@ export function resolveEdges(
   // file node ids, so an `#include` reached through an `-I` dir (not relative to the
   // including file) still resolves to the in-repo header when the suffix is unique.
   const cFilesBySuffix = new Map<string, string[]>();
+  // Rust crate roots: the directory holding a `lib.rs` or `main.rs`. A `use crate::a::b`
+  // resolves to `<crate root>/a/b.rs` (or `.../a/b/mod.rs`), relative to the crate the
+  // importing file belongs to — so a workspace with several crates stays unambiguous.
+  const rustCrateRoots: string[] = [];
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
@@ -75,6 +79,11 @@ export function resolveEdges(
       if (C_EXT.test(n.path)) {
         const parts = toPosixPath(n.path).split("/");
         for (let i = 0; i < parts.length; i++) push(cFilesBySuffix, parts.slice(i).join("/"), n.id);
+      }
+      {
+        const p = toPosixPath(n.path);
+        if (p === "lib.rs" || p === "main.rs") rustCrateRoots.push("");
+        else if (p.endsWith("/lib.rs") || p.endsWith("/main.rs")) rustCrateRoots.push(posix.dirname(p));
       }
       continue;
     }
@@ -121,7 +130,9 @@ export function resolveEdges(
             ? resolveJavaImport(e.specifier, javaFilesBySuffix)
             : C_EXT.test(e.file)
               ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
-              : resolveImport(e.specifier, e.file, byId);
+              : e.file.endsWith(".rs")
+                ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
+                : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       const kinds: Kind[] = e.relation === "implements" ? ["interface"] : ["class", "interface"];
@@ -353,6 +364,54 @@ function resolveCInclude(
   const hits = bySuffix.get(spec.replace(/^\.?\//, ""));
   if (hits && hits.length === 1) return hits[0]; // unique suffix — an -I-reached header
   return spec; // system/out-of-repo/ambiguous — keep the string, do not guess
+}
+
+/**
+ * Resolve a Rust `crate`-relative module path (`crate/a/b`, from `use crate::a::b::Item`)
+ * to the in-repo module file — `<crate root>/a/b.rs` or `<crate root>/a/b/mod.rs`, where
+ * the crate root is the `lib.rs`/`main.rs` directory the importing file lives under. The
+ * per-file crate root keeps a multi-crate workspace unambiguous. Not found or ambiguous
+ * (two roots, both `a/b.rs` and `a/b/mod.rs`) stays a `crate::…` string — never a guess.
+ */
+function resolveRustUse(spec: string, file: string, byId: Map<string, NodeV1>, crateRoots: string[]): string {
+  const full = spec.replace(/^crate\/?/, ""); // "crate/a/b/Item" → "a/b/Item"; "crate" → ""
+  const fpath = toPosixPath(file);
+  // the crate this file belongs to: the longest root that contains it (workspace-safe)
+  const owning = crateRoots
+    .filter((r) => r === "" ? true : fpath === r || fpath.startsWith(`${r}/`))
+    .sort((a, b) => b.length - a.length);
+  // No owning crate root (e.g. an integration test under `tests/`, whose `crate::` is the
+  // TEST binary's own root, not a lib) → do NOT search every crate in a workspace: that
+  // resolves `crate::util` to some unrelated crate's util.rs. Keep it a string instead.
+  if (owning.length === 0) return full === "" ? "crate" : `crate::${full.replace(/\//g, "::")}`;
+  const roots = [owning[0]];
+  const segs = full === "" ? [] : full.split("/");
+  const hitsFor = (rels: string[]): Set<string> => {
+    const hits = new Set<string>();
+    for (const r of roots) for (const rel of rels) {
+      const cand = r === "" ? rel : `${r}/${rel}`;
+      if (byId.has(cand)) hits.add(cand);
+    }
+    return hits;
+  };
+  // Try the longest module prefix first, shrinking toward — but NOT past — the first
+  // segment. `crate::a::b::C` resolves as module `a/b` (C is the item); `crate::net` as
+  // module `net`. The first prefix naming exactly one in-repo file wins; two matches at a
+  // level are ambiguous → drop rather than guess.
+  for (let k = segs.length; k >= 1; k--) {
+    const modPath = segs.slice(0, k).join("/");
+    const hits = hitsFor([`${modPath}.rs`, `${modPath}/mod.rs`]);
+    if (hits.size === 1) return [...hits][0];
+    if (hits.size > 1) break;
+  }
+  // The crate root (`lib.rs`/`main.rs`) is a target ONLY for `use crate::Item` or
+  // `use crate::{…}` — a deeper path whose module chain didn't resolve is genuinely
+  // unknown (a re-export, an inline `mod`, or out-of-tree), so keep it as a string.
+  if (segs.length <= 1) {
+    const hits = hitsFor(["lib.rs", "main.rs"]);
+    if (hits.size === 1) return [...hits][0];
+  }
+  return full === "" ? "crate" : `crate::${full.replace(/\//g, "::")}`;
 }
 
 /**

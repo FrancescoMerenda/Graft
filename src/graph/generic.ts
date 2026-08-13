@@ -216,9 +216,45 @@ export function extractGeneric(rel: string, source: string, langName: string): E
     walkExtract(tree.rootNode as TsNode, mkDef); // no tags.scm → symbols only
   }
   // The preprocessor is invisible to tags.scm, but in C/C++ a local `#include "x.h"`
-  // IS the dependency graph — capture it as a file→file import.
+  // IS the dependency graph — capture it as a file→file import. Likewise a Rust
+  // `use crate::…` is an in-crate module dependency.
   if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
+  else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
   return { nodes, rawEdges };
+}
+
+/** Rust `use crate::a::b::Item` → a file→module `imports` raw edge whose specifier is the
+ * crate-relative module path (`a/b`). Only in-crate imports are captured; `std::`,
+ * `super::`, `self::`, external crates, and globs are skipped — resolve.ts settles the
+ * path against the file's crate root, and drops it when it can't. */
+function extractUses(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
+  const visit = (n: TsNode): void => {
+    if (n.type === "use_declaration") {
+      const spec = rustUseModule(n.text);
+      if (spec !== null) rawEdges.push({ source: rel, relation: "imports", specifier: spec ? `crate/${spec}` : "crate", file: rel });
+    }
+    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
+      const c = n.namedChild?.(i);
+      if (c) visit(c);
+    }
+  };
+  visit(root);
+}
+
+/** The crate-relative path a Rust `use crate::…` names (`::`→`/`), or null when it is not
+ * an in-crate import. The FULL path is returned — including any trailing item segment —
+ * because a single `crate::lexical` can be either a module OR a crate-root item; the
+ * resolver settles that by finding the longest prefix that is a real module file. A
+ * `{ … }` group has no single item, so its prefix (before `{`) is the path. */
+function rustUseModule(text: string): string | null {
+  let s = text.replace(/^\s*use\s+/, "").replace(/;\s*$/, "").trim();
+  const brace = s.indexOf("{");
+  if (brace >= 0) s = s.slice(0, brace).replace(/::\s*$/, "");
+  else s = s.replace(/\s+as\s+\w+$/, "");
+  s = s.trim();
+  if (s !== "crate" && !s.startsWith("crate::")) return null; // only in-crate absolute imports
+  if (s.includes("*")) return null; // glob — no single module target
+  return s.replace(/^crate::?/, "").replace(/\s+/g, "").replace(/::/g, "/"); // "" = crate root
 }
 
 /** C/C++ `#include "header.h"` → a file→file `imports` raw edge. Only LOCAL includes

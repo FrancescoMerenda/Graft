@@ -180,6 +180,54 @@ test("breadth tier: C #include becomes a resolved file→file import (local only
   assert.deepEqual(targetsOf("src/amb.c"), ["util.h"], "ambiguous include kept external, never guessed");
 });
 
+// Rust `use crate::…` → a file→module import, resolved against the file's crate root
+// (the lib.rs/main.rs dir). The longest-prefix rule disambiguates a module from an item
+// and a `foo.rs` from a `foo/mod.rs`; std/super/external/glob are skipped, and an
+// unresolvable in-crate path is kept as a `crate::…` string, never guessed.
+test("breadth tier: Rust use crate::… resolves to the in-repo module (longest-prefix, drop-rather-than-guess)", async () => {
+  await warmGenericGrammars(["rust"]);
+  const files: Record<string, string> = {
+    "src/lib.rs": "pub mod error;\npub mod net;\n",
+    "src/error.rs": "pub struct Error;\n",
+    "src/net/mod.rs": "pub mod tcp;\n",
+    "src/net/tcp.rs": "pub struct Stream;\n",
+    "src/app.rs":
+      "use crate::error::Error;\n" +          // item under a module → src/error.rs
+      "use crate::net::tcp::Stream;\n" +       // nested module → src/net/tcp.rs
+      "use crate::net;\n" +                    // single-segment module → src/net/mod.rs
+      "use crate::missing::Thing;\n" +         // in-crate but no such file → kept as string
+      "use std::io::Read;\n" +                 // external — skipped
+      "use super::sibling::Thing;\n" +         // relative — skipped
+      "use serde::Serialize;\n" +              // external crate — skipped
+      "fn go() {}\n",
+    // an integration test lives OUTSIDE the crate root (src/); its `crate::` is the test
+    // binary's own root, not the lib — so it must NOT resolve across to src/error.rs.
+    "tests/it.rs": "use crate::error::Error;\nfn t() {}\n",
+  };
+  const nodes = [], raw = [];
+  for (const [rel, src] of Object.entries(files)) {
+    const r = extractGeneric(rel, src, "rust");
+    nodes.push(...r.nodes); raw.push(...r.rawEdges);
+  }
+  const imports = resolveEdges(nodes, raw).filter((e) => e.relation === "imports" && e.source === "src/app.rs");
+  const targets = imports.map((e) => e.target).sort();
+
+  assert.ok(targets.includes("src/error.rs"), "crate::error::Error → error.rs");
+  assert.ok(targets.includes("src/net/tcp.rs"), "crate::net::tcp::Stream → net/tcp.rs");
+  assert.ok(targets.includes("src/net/mod.rs"), "crate::net (single-segment module) → net/mod.rs");
+  // in-crate but unresolvable → the full path kept as a string, never a guessed file edge
+  // (crucially NOT silently resolved to the crate-root lib.rs)
+  assert.ok(targets.includes("crate::missing::Thing"), "unresolved in-crate path kept as a string");
+  // std / super / external crate are not in-crate imports — no edge at all
+  assert.ok(!targets.some((t) => /io|sibling|serde|Read|Serialize/.test(t)), "external/relative use skipped");
+  assert.equal(imports.length, 4, "exactly the 4 crate:: uses became edges");
+
+  // an integration test's `crate::error::Error` must NOT cross into src/error.rs — its
+  // crate root is unknown (it's the test binary), so it stays a string, never a false edge
+  const fromTest = resolveEdges(nodes, raw).filter((e) => e.relation === "imports" && e.source === "tests/it.rs");
+  assert.deepEqual(fromTest.map((e) => e.target), ["crate::error::Error"], "test-binary crate:: never resolves into the lib");
+});
+
 test("buildGraph + checkGraph handle a breadth-tier (.rs) repo end-to-end", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-rust-"));
   mkdirSync(join(dir, "src"), { recursive: true });
