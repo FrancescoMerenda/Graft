@@ -371,6 +371,8 @@ graft init --list-agents             # list known agent ids and exit
 
 graft version                        # print the installed + latest published npm version
 graft upgrade                        # npm install -g the latest published version
+                                     # a new version is announced automatically (checked once a day);
+                                     # after upgrading, the next session refreshes this repo's wiring itself
 
 # global
 graft --dir <path>                   # use a context dir other than <repo>/graft
