@@ -37,6 +37,7 @@ import { formatNonInteractiveHelp, formatPlan, runPicker } from "./cli-picker.js
 import { homedir } from "node:os";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, runUpgrade } from "./cli-meta.js";
 import { writeBuildConfig } from "./util/state.js";
+import { formatUpdateNudge, maybeRefreshInBackground, readUpdateCache, refreshUpdateCache, writeStamp } from "./upkeep.js";
 
 const program = new Command();
 const currentVersion = readCurrentVersion(import.meta.url);
@@ -126,6 +127,33 @@ async function refreshBefore(dir: string, opts: { refresh?: boolean }): Promise<
 /** Attached to every query command: `--no-refresh` answers from the graph exactly
  * as it is on disk, no rebuild. */
 const NO_REFRESH_FLAG = ["--no-refresh", "skip the freshness check — answer from the graph as-is"] as const;
+
+/**
+ * Commands that own the upgrade story themselves (`version`, `upgrade`) or must
+ * not editorialize on stderr at startup (`mcp` runs its own upkeep at boot, and
+ * `_update-check` IS the fetch).
+ */
+const UPKEEP_SKIP = new Set(["version", "upgrade", "_update-check", "mcp"]);
+
+/**
+ * Every other command: top up the cached registry answer in the background and,
+ * if a newer graft is out, say so once on stderr. This is what makes the CLI the
+ * cache filler for the hooks, which are not allowed to touch the network.
+ */
+program.hook("preAction", (_parent, action) => {
+  if (UPKEEP_SKIP.has(action.name())) return;
+  maybeRefreshInBackground();
+  const nudge = formatUpdateNudge(currentVersion, readUpdateCache()?.latest);
+  if (nudge) console.error(nudge);
+});
+
+// Hidden from --help: only ever spawned detached by maybeRefreshInBackground.
+program
+  .command("_update-check", { hidden: true })
+  .description("internal: refresh the cached latest-version answer")
+  .action(() => {
+    refreshUpdateCache();
+  });
 
 program
   .command("version")
@@ -693,6 +721,17 @@ function wireTarget(
       if (opts.global === false && selectedWrites(plan, ids).some((w) => w.scope === "global"))
         console.error("· skipped out-of-repo writes (--no-global)");
     }
+
+    // Record WHICH graft wrote this repo's agent files, and under which flags.
+    // Every entry point compares this against the running binary and re-writes
+    // them on a mismatch, so an `npm i -g` upgrade reaches the hooks/skill/rules
+    // too — not just the binary. The flags ride along so a refresh replays the
+    // user's choices (notably --no-global) instead of overriding them.
+    writeStamp(repo, currentVersion, ids, {
+      global: opts.global !== false,
+      mcp: opts.mcp !== false,
+      hooks: opts.hooks !== false,
+    });
 
     // Every host's wiring points at graft/, so the graph is built whatever was
     // selected — not only when Claude Code is in the list (runInit does its own).

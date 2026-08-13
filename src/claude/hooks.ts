@@ -6,6 +6,8 @@ import { formatBlastRadius, relevantRetrieval, formatOrientation } from './forma
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { patchStats, readStats, acquireLock, readSession, writeSession } from './state.js';
 import { graftCliPath, claudeScriptPath } from './paths.js';
+import { runUpkeep } from '../upkeep-run.js';
+import { runningVersion } from '../upkeep.js';
 import { scopeOf, scopesOfGraph } from '../graph/scopes.js';
 
 /** Prompts shorter than this never trigger retrieval — they are almost always
@@ -216,11 +218,20 @@ export async function main(event: string): Promise<void> {
   const dir = projectDir(input);
 
   if (event === 'session-start') {
+    // Before anything is emitted: refresh this repo's wiring if it was written by
+    // an older graft, and pick up any cached "newer version on npm" answer.
+    // background:false — a hook must never touch the network; the CLI and the MCP
+    // server fill that cache, this only reads it.
+    const upkeep = runUpkeep(dir, runningVersion(), { background: false }).lines;
     try {
       const idx = readFileSync(join(dir, 'graft', 'INDEX.md'), 'utf8');
       const banner = staleBanner(indexFreshness(dir)) ?? undefined;
-      emit('SessionStart', formatOrientation(idx, undefined, banner));
-    } catch { /* no INDEX.md — skip */ }
+      const orientation = formatOrientation(idx, undefined, banner);
+      emit('SessionStart', upkeep.length ? `${upkeep.join('\n')}\n\n${orientation}` : orientation);
+    } catch {
+      // No INDEX.md (never built here). An upgrade nudge is still worth saying.
+      if (upkeep.length) emit('SessionStart', upkeep.join('\n'));
+    }
     return;
   }
 
