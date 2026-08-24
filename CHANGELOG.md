@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0
 
 ### Added
 
@@ -31,6 +31,38 @@
   S3 generics registered in another file aren't seen (per-file pass); S4
   `signature()` multiple dispatch isn't handled; R6 active bindings are
   ordinary methods.
+- **Resumable `graft build --deep`.** The concept phase now checkpoints
+  summaries to disk atomically as it runs, so a build interrupted by a session
+  or rate limit resumes where it stopped on the next run (content-hash cached,
+  no repeated LLM cost) instead of restarting from zero.
+- **Kotlin gets full-fidelity (depth-tier) extraction**, and **Lua** and **Nix**
+  join the breadth tier. **Dart** now indexes top-level functions and consts.
+- **Hermes Agent** is a first-class `graft init` host.
+- **Every reported edge quotes the source line** where the call or reference
+  happens, in the PR comment, the CLI, and one shared helper.
+
+### Fixed
+
+- **PHP.** Enums with array consts stay in the graph; trait-inherited method
+  calls (`$this->traitMethod()`) resolve through the `implements` edge;
+  attribute usage is wired as `references` edges; anonymous classes are minted
+  as nodes with their `implements` edges.
+- **Java.** Generic type arguments (`Base<Item>`) no longer become bogus
+  `extends`/`implements` edges or poison call resolution; anonymous-class
+  methods no longer take the enclosing type's owner, so calls resolve to the
+  real method.
+- **Python.** Constructor calls (`Foo()`) resolve to the class instead of being
+  dropped.
+- **Deep tier.** An empty meaning reply is no longer cached as a permanent
+  `pending` state, and per-file failures surface instead of the build exiting
+  successfully.
+- **`graft ask`.** Distinct files are ranked ahead of one file's sibling spans
+  under bounded output, and multi-scope workspaces score comparably across
+  scopes.
+- **Claude hooks, sync-run, and statusline respect `GRAFT_DIR`**, and the hook
+  timeout is also read from user-level settings.
+- **Ingest** skips the `_build/` directory (the underscore spelling of a build
+  tree).
 
 ## 0.12.0
 
