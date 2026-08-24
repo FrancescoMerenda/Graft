@@ -27,6 +27,7 @@ const INDEXED = [
   "a.tsx", "a.jsx",
   "a.py", "a.pyi",
   "a.go",
+  "a.R", "a.r",
   "a.java",
 "a.kt", "a.kts",
   "a.php",
@@ -56,6 +57,8 @@ test("labels name the language, not the grammar that parses it", () => {
   assert.equal(languageLabelOf("api/main.py"), "python");
   assert.equal(languageLabelOf("api/main.pyi"), "python");
   assert.equal(languageLabelOf("cmd/main.go"), "go");
+  assert.equal(languageLabelOf("analysis/model.R"), "r");
+  assert.equal(languageLabelOf("analysis/model.r"), "r");
   assert.equal(languageLabelOf("src/main/java/com/acme/App.java"), "java");
 assert.equal(languageLabelOf("src/main/kotlin/com/acme/App.kt"), "kotlin");
   assert.equal(languageLabelOf("scripts/main.kts"), "kotlin");

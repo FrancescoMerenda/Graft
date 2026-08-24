@@ -207,6 +207,11 @@ export function resolveEdges(
         // vs a compiler-grade oracle) for a 3x count inflation, i.e. noise. See #35.
         continue;
       }
+      // Every language's bare-name call is a free function, except R (Phase 4):
+      // an untyped `obj$method()` there sets e.kinds to also allow a "method"
+      // match — see extract.ts's calleeName R branch for why (R6 methods are
+      // never kind "function", so without this every such call would be
+      // unconditionally unresolvable rather than just occasionally ambiguous).
       // Three cases, because "a bare call" means something different per tier:
       //
       //  - generic (breadth tier): tags.scm captures ALL calls as bare names, since it
@@ -217,13 +222,17 @@ export function resolveEdges(
       //    extract.ts, so the only bare call reaching here is `new Foo()`, whose target
       //    is a TYPE. Against the function index every constructor edge would drop.
       //  - everything else: functions, exactly as before.
+      //
+      // R (depth tier, Phase 4) sets `e.kinds` itself for an untyped `obj$method()`
+      // (see above), and that explicit choice wins over the per-tier default.
       const srcOrigin = byId.get(e.source)?.origin;
       const callKinds: Kind[] =
-        srcOrigin === "generic"
+        e.kinds ??
+        (srcOrigin === "generic"
           ? ["function", "method"]
           : e.file.endsWith(".java")
             ? ["class", "struct", "enum", "interface"]
-            : ["function"];
+            : ["function"]);
       let hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
       // Python is the Java case without the `new` to mark it: `Widget()` is an
       // ordinary call node, so a constructor edge dies against the function-only
