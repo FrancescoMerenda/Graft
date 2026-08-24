@@ -115,6 +115,14 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     src: `local function helper()\n  return 1\nend\n\nlocal assigned = function()\n  return helper()\nend\n\nlocal handlers = { draw = function() return helper() end }\n\nfunction Widget:run()\n  return helper()\nend\n\nlocal function launch()\n  return Widget:run()\nend\n`,
     defs: ["function:assigned", "function:draw", "function:helper", "function:launch", "method:run"], call: ["launch", "run"],
   },
+  {
+    // Nix: a binding whose value is a lambda (let-bound or attrset field) becomes
+    // a function def; a non-function binding (`version`) is not emitted, and an
+    // application of one binding by another resolves as a call.
+    lang: "nix", file: "a.nix",
+    src: `let\n  helper = x: x + 1;\nin {\n  greet = name: helper 2;\n  version = "1.0";\n}\n`,
+    defs: ["function:greet", "function:helper"], call: ["greet", "helper"],
+  },
 ];
 
 for (const s of SNIPPETS) {
