@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Grok (xAI) is a first-class `graft init` host.** Detects `~/.grok` or a
+  repo `.grok/` and writes `.grok/skills/graft/SKILL.md` plus a repo-level
+  `[mcp_servers.graft]` block in `.grok/config.toml` (Grok's MCP config).
+  Select it with `graft init --agents grok`.
 - **R language support.** `tree-sitter-r` (`npm:@davisvaughan/tree-sitter-r`;
   the unscoped npm name is a squatted placeholder) parses `.R`/`.r` files.
   Plain functions: every `name <- function(...)` / `name = function(...)` /
