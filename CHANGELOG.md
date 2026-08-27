@@ -17,6 +17,41 @@
 
 ### Added
 
+- **`graft init` converges instead of accumulating, and `graft uninstall` removes
+  graft entirely.** `init` wrote the files the selected agents needed and never
+  looked at the rest, so a repo wired by an older version — or by the same version
+  with different `--agents` — kept that run's files forever, and the session-start
+  refresh then kept them *up to date*. `init` now retracts every agent it isn't
+  about to write, and `graft uninstall` retracts the lot.
+
+  Only graft's own contribution is touched: inside a shared file just the
+  marker-fenced block, inside a config just the `graft` key — foreign MCP servers,
+  hooks, statuslines and ignore entries survive byte for byte. A file left holding
+  nothing is deleted rather than truncated to an empty shell, and the directories
+  that empties are pruned. An unparseable config is reported and left alone.
+  `uninstall` is dry-run until `-y`.
+
+  The target list is derived from the same registries `init` writes through, so a
+  host added later is retractable for free; only a host *removed* from the registry
+  needs a hand-written entry, and `LEGACY_TARGETS` says so. Exclusion is by path as
+  well as by host id: three hosts write `AGENTS.md`, and keeping any one of them has
+  to spare that block.
+
+### Fixed
+
+- **A stale `[mcp_servers.graft]` is now replaced instead of skipped.** The TOML
+  writer returned early the moment the header existed, which froze the launch
+  command at whatever the first `init` wrote — a repo wired when graft wasn't on
+  `PATH` kept the slow `npx` form forever, and no upgrade could correct it. Codex
+  and Grok both went through that path. Foreign tables are untouched either way.
+
+- **`.claude/settings.json` no longer accumulates graft's own entries.** The
+  allowlist and `footerLinksRegexes` were append-only, so a renamed invocation form
+  stayed in the user's settings beside its replacement with nothing able to remove
+  it. Both now drop graft's prior entries before adding the current set, the same
+  way the hooks merge already did. Scoped to the forms graft is actually invoked as,
+  so a hand-written `Bash(graft-mytool:*)` survives.
+
 - **`graft blast` suggests who to tag.** The comment already named the areas a
   diff changes and the areas it can affect; it now names the people behind them,
   read from git history with no API call and no config file. One `git log` per
