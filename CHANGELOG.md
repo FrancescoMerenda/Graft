@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **`allowScripts` now names R by the identity npm actually matches on.** The
+  entry was `tree-sitter-r@1.3.0`, the alias in `dependencies`, but npm derives
+  the identity from the resolved package in the lockfile —
+  `@davisvaughan/tree-sitter-r@1.3.0`. The old key matched nothing, so the
+  grammar's install script counted as unreviewed and was blocked;
+  `npm ci --strict-allow-scripts` failed on it. Harmless in practice only
+  because the package ships prebuilds for every supported platform. Note the
+  `overrides` key must stay the alias — the two fields key differently.
 - **`graft check` no longer reports every container-tier node as `removed`.**
   `checkGraph` branched on the depth and breadth tiers but never on the container
   tier the build uses for `.vue`, so `genericLangOf` returned null, a `generic!`
