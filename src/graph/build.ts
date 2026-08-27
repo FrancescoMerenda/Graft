@@ -23,7 +23,7 @@ import { containerLangOf, extractContainer, warmContainerGrammars } from "./cont
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
-import { readFollowSubmodules, readIncludeDirs } from "../util/state.js";
+import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
 import {
   emptyExtractCache,
   readExtractCache,
@@ -159,6 +159,7 @@ export async function buildGraph(
   // including the repo's persisted directory and submodule choices.
   const walked = walkDir(root, readIncludeDirs(root), {
     followSubmodules: readFollowSubmodules(root),
+    followNestedRepos: readFollowNestedRepos(root),
   });
   const onlyDirs = opts.onlyDirs && opts.onlyDirs.length > 0 ? new Set(opts.onlyDirs) : undefined;
   const repoFiles = filterByOnlyDirs(walked, root, onlyDirs);
