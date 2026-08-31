@@ -40,6 +40,7 @@ import { homedir } from "node:os";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, runUpgrade } from "./cli-meta.js";
 import { patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
+import { latestSession, formatSessionStats } from "./claude/session-metrics.js";
 import { formatUpdateNudge, maybeRefreshInBackground, readUpdateCache, refreshUpdateCache, writeStamp } from "./upkeep.js";
 import {
   errorCode,
@@ -659,6 +660,24 @@ program
     }
 
     if (bothMissing || markdownFail || wiringFail) process.exit(1);
+  });
+
+program
+  .command("stats")
+  .description("Show this agent session's graft-vs-source usage mix and tokens saved")
+  .argument(...DIR_ARG)
+  .option("--json", "output the session stats as JSON")
+  .action((dirArg: string | undefined, opts: { json?: boolean }) => {
+    // Reads local session JSON only — no graph, no network. This is how a Cursor
+    // user (no statusline) sees the numbers the Claude Code bar would show, and it
+    // works under DO_NOT_TRACK because it never touches telemetry.
+    const dir = queryRoot(dirArg);
+    const s = latestSession(dir);
+    if (opts.json) {
+      console.log(JSON.stringify(s, null, 2));
+      return;
+    }
+    console.log(formatSessionStats(s));
   });
 
 program

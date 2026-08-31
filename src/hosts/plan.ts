@@ -13,6 +13,7 @@ import { statSync } from 'node:fs';
 import { HOSTS, detectHosts, type DetectProbe, type HostTarget } from './registry.js';
 import { mcpTargets } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
+import { cursorHookTargets } from './cursor-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeTargets } from '../claude/init.js';
 
@@ -78,6 +79,7 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
         instructionTarget(repo, host),
         ...mcpTargets(repo, [host.id], { home }),
         ...(host.id === 'agents' ? hookTargets(home) : []),
+        ...(host.id === 'cursor' ? cursorHookTargets(repo) : []),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home) : []),
       ],
     })),

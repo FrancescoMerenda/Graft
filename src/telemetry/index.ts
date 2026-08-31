@@ -14,4 +14,4 @@ export { telemetryOn, offReason, explainOff } from './gate.js';
 export { maybeFlushInBackground, runFlush } from './flush.js';
 export { firstRunNotice, formatStatus, formatDebug, NOTICE, TELEMETRY_DOC_URL } from './notice.js';
 export { patchState, readState } from './identity.js';
-export { flushClosedSessions } from './sessions.js';
+export { flushClosedSessions, summarizeSession } from './sessions.js';
