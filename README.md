@@ -31,11 +31,11 @@
 
 </div>
 
+<p align="center"><b>Reviewing pull requests?</b> <a href="https://github.com/apps/trailhq-graft">Add the graft GitHub App</a> to get an automatic blast-radius review on every PR.</p>
+
 <p align="center">
   <img src="assets/graft-comparison-demo.gif" alt="Side-by-side comparison of a coding agent working with and without graft" width="820"/>
 </p>
-
-> **Reviewing pull requests?** [Add the graft GitHub App](https://github.com/apps/trailhq-graft) to get an automatic blast-radius review on every PR.
 
 ---
 
