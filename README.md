@@ -15,6 +15,7 @@
   <img src="https://img.shields.io/badge/License-MIT-20C997?style=for-the-badge" />
   <a href="TELEMETRY.md"><img src="https://img.shields.io/badge/telemetry-anonymous%2C%20opt--out-546FFF?style=for-the-badge" /></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/NanoNets/Graft"><img src="https://img.shields.io/ossf-scorecard/github.com/NanoNets/Graft?style=for-the-badge&label=openssf%20scorecard" /></a>
+  <a href="https://github.com/apps/trailhq-graft"><img src="https://img.shields.io/badge/PR%20reviews-install%20GitHub%20App-546FFF?style=for-the-badge&logo=github&logoColor=white" /></a>
 </p>
 
 ### Up to **4× cheaper** and **3× faster**, with better or no loss of correctness.
@@ -26,13 +27,13 @@
 | Time savings | Baseline | **+60%** |
 | Correctness | 54% | **66% (+12 pts)** |
 
-<sub>Efficiency is a 162-run controlled benchmark (same agent, same file tools, only the context differs). Correctness is **SWE-bench Verified**, graded by the official harness — graft resolved 66% of instances tested against Cold Claude Code's 54%. [Efficiency method ↓](#benchmark) · [SWE-bench ↓](#swe-bench-verified) · [Per-repo numbers ↓](#tested-on-your-popular-repos)</sub>
-
 </div>
 
 <p align="center">
   <img src="assets/graft-comparison-demo.gif" alt="Side-by-side comparison of a coding agent working with and without graft" width="820"/>
 </p>
+
+> **Reviewing pull requests?** [Add the graft GitHub App](https://github.com/apps/trailhq-graft) to get an automatic blast-radius review on every PR.
 
 ---
 
