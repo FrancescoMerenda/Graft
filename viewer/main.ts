@@ -6,6 +6,9 @@ import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, co
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
+import { groupGraph, availableDepths } from "./aggregate.js";
+import { staticLayout, type LayoutMode } from "./layouts.js";
+import { buildAdjacency, shortestPath, neighborhood, findCycles, hubs, type Adjacency } from "./analysis.js";
 
 type Tab = "context" | "code" | "outline";
 
@@ -18,10 +21,40 @@ const state = {
   outlineOpen: {} as Record<string, boolean>,
 };
 
+/**
+ * How the raw graph is turned into the one on screen.
+ *
+ * `depth` and `scope` are the aggregation: roll up to N directory levels, inside
+ * an optional subtree. `shown` is the result, and everything downstream — chips,
+ * legend, counts, every analysis — reads it rather than the raw graph, so what
+ * you can ask about is always exactly what you can see.
+ */
+const tools = {
+  depth: 0,
+  scope: undefined as string | undefined,
+  hideOrphans: false,
+  layout: "force" as LayoutMode,
+  shown: null as VizGraph | null,
+  adjacency: null as Adjacency | null,
+  /** Set when `path` is waiting for its second endpoint. */
+  pathFrom: null as string | null,
+};
+
+/** Past this, an ungrouped force layout is a dot cloud rather than a diagram, so
+ * the first thing a reader sees is the rolled-up view. They can still turn it off. */
+const AUTO_GROUP_NODES = 2000;
+const LENS_HOPS = 2;
+
 const view = new GraphView($("graphCanvas") as HTMLCanvasElement);
 
-function activeGraph(): VizGraph | null {
+/** The dataset behind the current tab, before grouping. */
+function rawGraph(): VizGraph | null {
   return state.tab === "context" ? state.context : state.code;
+}
+
+/** What is actually on the canvas — grouped, scoped, filtered. */
+function activeGraph(): VizGraph | null {
+  return tools.shown ?? rawGraph();
 }
 
 function graphTab(): "context" | "code" {
@@ -125,7 +158,13 @@ function updateCounts(): void {
     el.textContent = `${files} files · ${state.code.nodes.length} symbols`;
   } else {
     const graph = activeGraph();
-    el.textContent = graph ? `${graph.meta.nodeCount} nodes · ${graph.meta.edgeCount} links` : "";
+    const raw = rawGraph();
+    if (!graph) { el.textContent = ""; return; }
+    const unit = tools.depth > 0 ? "groups" : "nodes";
+    const link = tools.depth > 0 ? "bundles" : "links";
+    // Say what was rolled away, so a smaller number never reads as a smaller repo.
+    const of = raw && raw.nodes.length !== graph.nodes.length ? ` of ${raw.nodes.length} symbols` : "";
+    el.textContent = `${graph.nodes.length} ${unit} · ${graph.edges.length} ${link}${of}`;
   }
 }
 
@@ -141,7 +180,7 @@ function showDetail(id: string | null): void {
   });
 }
 
-view.onSelect = (id) => showDetail(id);
+view.onSelect = (id) => { if (!maybeCompletePath(id)) showDetail(id); };
 
 /* ---------- tabs ---------- */
 function setTab(tab: Tab): void {
@@ -149,6 +188,11 @@ function setTab(tab: Tab): void {
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => {
     b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
   });
+  // Drop the previous tab's derived graph before anything reads it: `activeGraph`
+  // answers from it, and a stale one would have the code tab measuring, grouping
+  // and drawing the context tab's nodes.
+  tools.shown = null;
+  tools.adjacency = null;
   const isOutline = tab === "outline";
   $("canvasWrap").hidden = isOutline;
   $("outlineView").hidden = !isOutline;
@@ -166,7 +210,7 @@ function setTab(tab: Tab): void {
       showEmpty("No code graph yet — run <code>graft graph</code> to generate <span class=\"mono\">graph.json</span>.");
     }
   } else {
-    const graph = activeGraph();
+    const graph = rawGraph();
     if (!graph || graph.nodes.length === 0) {
       // A graph that exists but holds no nodes used to fall through to the canvas
       // and render nothing at all — worst on an exported page, where the reader
@@ -179,9 +223,14 @@ function setTab(tab: Tab): void {
         : "No context graph — run <code>graft init</code> first."));
     } else {
       empty.hidden = true;
-      view.resetView();
-      view.setData(graph, graphTab());
-      view.reheat();
+      // A fresh tab starts un-drilled, and large graphs start grouped.
+      tools.scope = undefined;
+      tools.pathFrom = null;
+      view.spotlight = null;
+      const big = graph.nodes.length > AUTO_GROUP_NODES;
+      tools.depth = big ? Math.min(2, availableDepths(graph).length) : 0;
+      tools.hideOrphans = big;
+      applyTools();
     }
   }
   renderChips();
@@ -286,6 +335,184 @@ resizer.addEventListener("keydown", (ev) => {
   view.reheat();
   ev.preventDefault();
 });
+
+
+/* ---------- grouping, layout, and the analysis tools ---------- */
+
+/**
+ * Recompute what is on the canvas from `tools`, then hand it to the renderer.
+ *
+ * The single funnel: every control below changes `tools` and calls this, so there
+ * is exactly one place where "what the reader asked for" becomes "what is drawn",
+ * and no way for a chip, a legend and a finding to disagree about which graph
+ * they are describing.
+ */
+function applyTools(): void {
+  const raw = rawGraph();
+  if (!raw) return;
+  const shown = groupGraph(raw, { depth: tools.depth, scope: tools.scope, hideOrphans: tools.hideOrphans });
+  tools.shown = shown;
+  tools.adjacency = buildAdjacency(shown);
+  // A finding names ids from the previous view; keep only the ones that survived.
+  if (view.spotlight) {
+    const alive = new Set(shown.nodes.map((n) => n.id));
+    const kept = new Set([...view.spotlight].filter((id) => alive.has(id)));
+    view.spotlight = kept.size ? kept : null;
+  }
+
+  view.setData(shown, graphTab());
+  const positions = staticLayout(tools.layout, shown, tools.depth || 2);
+  if (positions) view.useStaticPositions(positions);
+  else view.reheat();
+  view.resetView();
+
+  renderGroupOptions(raw);
+  renderCrumbs();
+  renderChips();
+  renderLegend();
+  updateShownCount();
+  updateCounts();
+  $("orphanChip").className = "echip" + (tools.hideOrphans ? "" : " on");
+  $("clearBtn").hidden = view.spotlight === null;
+}
+
+/** Depth options are the levels this repo actually has, not a fixed list. */
+function renderGroupOptions(raw: VizGraph): void {
+  const sel = $("groupSel") as HTMLSelectElement;
+  const depths = availableDepths(raw);
+  const wanted = String(tools.depth);
+  const options = ["0", ...depths.map(String)];
+  if (sel.dataset.built !== options.join(",")) {
+    sel.innerHTML = "";
+    for (const d of options) {
+      const o = document.createElement("option");
+      o.value = d;
+      o.textContent = d === "0" ? "symbols" : d === "1" ? "top level" : `${d} levels`;
+      sel.appendChild(o);
+    }
+    sel.dataset.built = options.join(",");
+  }
+  sel.value = options.includes(wanted) ? wanted : "0";
+}
+
+/** Where in the tree we have drilled to, and the way back out. */
+function renderCrumbs(): void {
+  const host = $("crumbs");
+  host.innerHTML = "";
+  if (!tools.scope) { host.hidden = true; return; }
+  host.hidden = false;
+  const parts = tools.scope.split("/");
+  const add = (label: string, target: string | undefined): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.addEventListener("click", () => { tools.scope = target; applyTools(); });
+    host.appendChild(b);
+  };
+  add("all", undefined);
+  parts.forEach((part, i) => {
+    const sep = document.createElement("span");
+    sep.className = "sep";
+    sep.textContent = "/";
+    host.appendChild(sep);
+    add(part, parts.slice(0, i + 1).join("/"));
+  });
+}
+
+/** One line saying what was found, or nothing at all. */
+function showFinding(html: string | null): void {
+  const el = $("finding");
+  if (!html) { el.hidden = true; el.innerHTML = ""; return; }
+  el.innerHTML = html;
+  el.hidden = false;
+}
+
+function setSpotlight(ids: Set<string> | null, message: string | null): void {
+  view.spotlight = ids;
+  view.restyle();
+  showFinding(message);
+  $("clearBtn").hidden = ids === null;
+}
+
+// Clicking a bubble means "go in there": scope to that directory and re-group one
+// level deeper, which is the same gesture as opening a folder.
+view.onDrill = (prefix) => {
+  tools.scope = prefix;
+  tools.depth = prefix.split("/").length + 1;
+  applyTools();
+};
+
+($("groupSel") as HTMLSelectElement).addEventListener("change", (ev) => {
+  tools.depth = Number((ev.target as HTMLSelectElement).value);
+  applyTools();
+});
+($("layoutSel") as HTMLSelectElement).addEventListener("change", (ev) => {
+  tools.layout = (ev.target as HTMLSelectElement).value as LayoutMode;
+  applyTools();
+});
+$("orphanChip").addEventListener("click", () => {
+  tools.hideOrphans = !tools.hideOrphans;
+  applyTools();
+});
+
+$("cyclesBtn").addEventListener("click", () => {
+  if (!tools.adjacency) return;
+  const cycles = findCycles(tools.adjacency);
+  if (cycles.length === 0) { setSpotlight(null, "No dependency cycles in this view."); return; }
+  const ids = new Set(cycles.flat());
+  const biggest = cycles[0].length;
+  setSpotlight(ids, `<b>${cycles.length}</b> dependency ${cycles.length === 1 ? "cycle" : "cycles"}, largest <b>${biggest}</b> nodes.`);
+});
+
+$("hubsBtn").addEventListener("click", () => {
+  if (!tools.adjacency) return;
+  const top = hubs(tools.adjacency, 20);
+  if (top.length === 0) { setSpotlight(null, "Nothing in this view is connected."); return; }
+  setSpotlight(
+    new Set(top.map((h) => h.id)),
+    `Top <b>${top.length}</b> by connections — highest: <b>${escapeText(nameOf(top[0].id))}</b> (${top[0].degree}).`,
+  );
+});
+
+$("lensBtn").addEventListener("click", () => {
+  if (!tools.adjacency || !view.selected) { showFinding("Select a node first, then press lens."); return; }
+  const ids = neighborhood(tools.adjacency, view.selected, LENS_HOPS);
+  setSpotlight(ids, `<b>${ids.size}</b> within ${LENS_HOPS} hops of <b>${escapeText(nameOf(view.selected))}</b>.`);
+});
+
+// Two clicks, because a path needs two ends: the first press remembers the
+// selection, the next selection completes it.
+$("pathBtn").addEventListener("click", () => {
+  if (!view.selected) { showFinding("Select one end of the path, then press path."); return; }
+  tools.pathFrom = view.selected;
+  showFinding(`From <b>${escapeText(nameOf(view.selected))}</b> — now select the other end.`);
+});
+
+$("clearBtn").addEventListener("click", () => {
+  tools.pathFrom = null;
+  setSpotlight(null, null);
+});
+
+function nameOf(id: string): string {
+  return activeGraph()?.nodes.find((n) => n.id === id)?.name ?? id;
+}
+
+/** Completing a pending path, when a second node is chosen. */
+function maybeCompletePath(id: string | null): boolean {
+  if (!tools.pathFrom || !id || !tools.adjacency || id === tools.pathFrom) return false;
+  const from = tools.pathFrom;
+  tools.pathFrom = null;
+  const path = shortestPath(tools.adjacency, from, id);
+  if (path.length === 0) {
+    setSpotlight(null, `No path from <b>${escapeText(nameOf(from))}</b> to <b>${escapeText(nameOf(id))}</b> — nothing depends that way round.`);
+    return true;
+  }
+  setSpotlight(
+    new Set(path),
+    `<b>${path.length - 1}</b> ${path.length === 2 ? "hop" : "hops"}: ${path.map((p) => escapeText(nameOf(p))).join(" → ")}`,
+  );
+  return true;
+}
 
 /* ---------- data loading + live reload ---------- */
 async function loadAll(): Promise<void> {

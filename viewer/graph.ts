@@ -40,6 +40,10 @@ export interface SimNode {
   deg: number;
   r: number;
   owners?: NodeOwner[];
+  /** Source path, or the directory a rolled-up bubble stands for. */
+  path?: string;
+  /** Symbols behind a rolled-up bubble; drives its radius. */
+  count?: number;
 }
 
 interface SimEdge {
@@ -48,6 +52,8 @@ interface SimEdge {
   relation: string;
   description?: string;
   confidence?: string;
+  /** Edges behind a rolled-up bundle; drives stroke width. */
+  weight?: number;
 }
 
 /** Initials shown on a bubble before the rest become a count. Two faces read as
@@ -80,6 +86,21 @@ const LABEL_FONT = '600 11.5px ui-sans-serif, system-ui, -apple-system, "Segoe U
  * on-screen edges they are dropped except on the focused ones. */
 const ARROW_MIN_K = 0.9;
 const MAX_ARROWS = 3000;
+
+/** Share of nodes ignored at each end of each axis when fitting the view. */
+const FIT_TRIM = 0.015;
+
+/** Below this a full-detail frame is cheap enough that a moving graph never needs
+ * the draft pass — and a small graph is where the detail actually reads. */
+const DRAFT_MIN_NODES = 1500;
+
+/** Halos are a radial gradient each — only the top handful get one. */
+const MAX_GLOWS = 40;
+
+/** The minimap earns its corner only on a graph big enough to get lost in. */
+const MINIMAP_MIN_NODES = 400;
+const MINIMAP_W = 150;
+const MINIMAP_SAMPLES = 3000;
 
 /** Owner badges are two circles and a glyph run each — prominent nodes only. */
 const BADGE_MIN_K = 0.8;
@@ -132,6 +153,22 @@ export class GraphView {
   private theme!: Theme;
 
   private view = { x: 0, y: 0, k: 1 };
+  /** Where the camera is heading, when a move is being animated. */
+  private target: { x: number; y: number; k: number } | null = null;
+  /**
+   * True once the reader has moved the camera themselves.
+   *
+   * The force layout expands for several seconds after it starts, so the fit
+   * computed at seed time is wrong by the time it settles — but re-fitting under
+   * someone who has panned somewhere deliberately is worse than a bad fit. So it
+   * re-fits exactly once, on settle, and only if they have not taken over.
+   */
+  private userMoved = false;
+  private wasHot = false;
+  /** Auto-fit is a once-per-dataset courtesy, not a policy. Without this it fires
+   * again after every reheat — including the one a drag causes, so arranging the
+   * graph by hand kept yanking the camera out from under the reader. */
+  private fittedOnce = false;
   private tab: "context" | "code" = "context";
   private dpr = 1;
   private width = 0;
@@ -146,9 +183,17 @@ export class GraphView {
   private gridStamp = -1;
   private stamp = 0;
 
+  /** Indices of the most connected nodes, for the glow. Recomputed with the data,
+   * never per frame. */
+  private hubIndices: number[] = [];
+  /** Last drawn minimap geometry, so a click in it can be turned back into a
+   * world position. Null until one has been drawn. */
+  private minimap: { x0: number; y0: number; w: number; h: number; scale: number; cx: number; cy: number } | null = null;
   private neighbors = new Set<number>();
   private hover = -1;
   private hoverQueued = false;
+  /** Nodes the reader has placed by hand. They stay put until released. */
+  private pinned = new Set<number>();
 
   /**
    * Built geometry, reused across frames that only moved the camera.
@@ -161,6 +206,9 @@ export class GraphView {
    */
   private geomCache: { edges: Bucket[]; nodes: Bucket[]; focused: { e: SimEdge; role: "out" | "in" }[]; arrows: SimEdge[] | null } | null = null;
   private geomKey = "";
+  /** Bumped whenever `spotlight` is replaced, so the cache key notices a set of
+   * the same size holding different ids. */
+  private spotVersion = 0;
 
   selected: string | null = null;
   query = "";
@@ -170,6 +218,15 @@ export class GraphView {
    * it never changes which nodes are on the canvas. */
   showOwners = true;
   onSelect: (id: string | null) => void = () => {};
+  /** A group bubble was clicked: the caller decides what drilling in means. */
+  onDrill: (prefix: string) => void = () => {};
+  /**
+   * The answer to whatever question was last asked of the graph — a cycle, a
+   * dependency path, a k-hop lens, the top hubs. One mechanism for all of them:
+   * ids in the set stay lit, everything else recedes, and edges between two lit
+   * nodes are painted as the finding. Null means no question is being asked.
+   */
+  spotlight: Set<string> | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -184,7 +241,17 @@ export class GraphView {
     this.readTheme();
     this.resize();
     new ResizeObserver(() => this.resize()).observe(canvas);
-    this.layout.onFrame = () => { this.stamp++; this.dirty = true; };
+    this.layout.onFrame = () => {
+      this.stamp++;
+      this.dirty = true;
+      // Leaving the draft pass is itself a reason to repaint.
+      if (this.wasHot && !this.layout.hot) this.geomCache = null;
+      if (this.wasHot && !this.layout.hot && !this.userMoved && !this.fittedOnce) {
+        this.fittedOnce = true;
+        this.resetView();
+      }
+      this.wasHot = this.layout.hot;
+    };
     this.bindPointer();
     this.loop();
   }
@@ -211,7 +278,12 @@ export class GraphView {
 
     this.nodes = graph.nodes.map((n, i) => {
       const d = deg[n.id] ?? 0;
-      const r = 11 + Math.min(13, d * 2.6);
+      // A rolled-up bubble is sized by what is inside it, on a square root so a
+      // 4,000-symbol module is bigger than a 400-symbol one without being ten
+      // times the width. A plain symbol is sized by how connected it is.
+      const r = n.count
+        ? 14 + Math.min(52, Math.sqrt(n.count) * 3.4)
+        : 11 + Math.min(13, d * 2.6);
       radii[i] = r;
       const prev = prevIndex.get(n.id);
       if (prev !== undefined && prevPos.length > prev * 2 + 1) {
@@ -228,7 +300,7 @@ export class GraphView {
         positions[i * 2] = W / 2 + Math.cos(angle) * spread;
         positions[i * 2 + 1] = H / 2 + Math.sin(angle) * spread;
       }
-      return { id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r };
+      return { id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r, path: n.path, count: n.count };
     });
 
     this.index = new Map(this.nodes.map((n, i) => [n.id, i]));
@@ -240,9 +312,12 @@ export class GraphView {
       const s = this.index.get(e.source);
       const t = this.index.get(e.target);
       if (s === undefined || t === undefined) continue;
-      this.edges.push({ s, t, relation: e.relation, description: e.description, confidence: e.confidence });
+      this.edges.push({ s, t, relation: e.relation, description: e.description, confidence: e.confidence, weight: e.weight });
       links.push(s, t);
-      distances.push(REST[famOf(e.relation)]);
+      // Rest length measures the GAP between two bubbles, not their centres —
+      // otherwise a 60-unit module and a 12-unit one sit at the same distance and
+      // the big one swallows the link.
+      distances.push(REST[famOf(e.relation)] + radii[s] + radii[t]);
     }
 
     const spec: SimSpec = {
@@ -254,14 +329,28 @@ export class GraphView {
       width: W,
       height: H,
     };
+    this.pinned.clear();
+    this.hubIndices = this.nodes
+      .map((n, i) => [i, n.deg] as const)
+      .filter(([, d]) => d > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_GLOWS)
+      .map(([i]) => i);
+
     this.layout.setData(spec);
+    this.userMoved = false;
+    this.fittedOnce = false;
+    this.wasHot = true;
     this.restyle();
   }
 
   /* ----------------------------------------------------------------- style -- */
 
   private readTheme(): void {
-    const types = ["file", "class", "function", "method", "interface", "type", "enum", "system", "concept", "api", "changed", "affected"];
+    // Every type the two palettes define, `group` included — a type missing here
+    // silently falls back to the edge colour, which reads as "broken", not "other".
+    const types = ["file", "class", "function", "method", "interface", "type", "enum",
+      "system", "concept", "api", "changed", "affected", "group"];
     const node: Record<string, string> = {};
     for (const t of types) node[t] = cvar(colorToken(this.tab, t));
     this.theme = {
@@ -296,6 +385,7 @@ export class GraphView {
     // The cache bakes theme colours into its buckets, and the key cannot see a
     // theme swap — drop it outright rather than encode a palette in a string.
     this.geomCache = null;
+    this.spotVersion++;
     this.dirty = true;
   }
 
@@ -322,7 +412,34 @@ export class GraphView {
     return Math.max(MIN_K, Math.min(MAX_K, k));
   }
 
+  /** Animate the camera rather than teleporting it: a jump cut across a graph
+   * this size loses the reader completely, and 300ms of travel is what tells them
+   * the new view is the same graph seen from somewhere else. */
+  private glideTo(to: { x: number; y: number; k: number }): void {
+    this.target = to;
+    this.dirty = true;
+  }
+
+  /** One frame of camera travel; true while there is further to go. */
+  private stepCamera(): boolean {
+    if (!this.target) return false;
+    const t = this.target;
+    // Exponential ease: fast start, soft landing, and no duration to track.
+    const step = 0.18;
+    this.view.x += (t.x - this.view.x) * step;
+    this.view.y += (t.y - this.view.y) * step;
+    this.view.k += (t.k - this.view.k) * step;
+    if (Math.abs(t.k - this.view.k) < t.k * 0.002 && Math.hypot(t.x - this.view.x, t.y - this.view.y) < 0.5) {
+      this.view = { ...t };
+      this.target = null;
+      return false;
+    }
+    return true;
+  }
+
   zoomBy(factor: number): void {
+    this.userMoved = true;
+    this.target = null;
     const cx = this.width / 2;
     const cy = this.height / 2;
     const k = this.clampK(this.view.k * factor);
@@ -342,22 +459,28 @@ export class GraphView {
   resetView(): void {
     const pos = this.layout.positions;
     if (pos.length === 0) { this.view = { x: 0, y: 0, k: 1 }; this.dirty = true; return; }
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let i = 0; i < this.nodes.length; i++) {
-      const r = this.nodes[i].r;
-      const x = pos[i * 2], y = pos[i * 2 + 1];
-      if (x - r < minX) minX = x - r;
-      if (y - r < minY) minY = y - r;
-      if (x + r > maxX) maxX = x + r;
-      if (y + r > maxY) maxY = y + r;
-    }
+    // Fit the bulk, not the extremes. A handful of unconnected symbols drift far
+    // from everything else, and framing them shrinks the part anyone came to look
+    // at to a smudge in the middle. Trimming a few percent off each axis keeps the
+    // strays reachable — by panning, or from the minimap — without letting three of
+    // them decide the zoom for the other 26,000.
+    const xs = new Float64Array(this.nodes.length);
+    const ys = new Float64Array(this.nodes.length);
+    for (let i = 0; i < this.nodes.length; i++) { xs[i] = pos[i * 2]; ys[i] = pos[i * 2 + 1]; }
+    xs.sort(); ys.sort();
+    const cut = Math.floor(this.nodes.length * FIT_TRIM);
+    const lo = cut, hi = this.nodes.length - 1 - cut;
+    const pad = 40;
+    const minX = xs[lo] - pad, maxX = xs[hi] + pad;
+    const minY = ys[lo] - pad, maxY = ys[hi] + pad;
     const w = Math.max(1, maxX - minX);
     const h = Math.max(1, maxY - minY);
     const k = this.clampK(Math.min(this.width / w, this.height / h) * 0.92);
-    this.view.k = k;
-    this.view.x = this.width / 2 - ((minX + maxX) / 2) * k;
-    this.view.y = this.height / 2 - ((minY + maxY) / 2) * k;
-    this.dirty = true;
+    this.glideTo({
+      k,
+      x: this.width / 2 - ((minX + maxX) / 2) * k,
+      y: this.height / 2 - ((minY + maxY) / 2) * k,
+    });
   }
 
   /** Center the view on a node and select it (used by search). */
@@ -365,9 +488,8 @@ export class GraphView {
     const i = this.index.get(id);
     if (i === undefined) return;
     const pos = this.layout.positions;
-    this.view.k = Math.max(this.view.k, 1.4);
-    this.view.x = this.width / 2 - pos[i * 2] * this.view.k;
-    this.view.y = this.height / 2 - pos[i * 2 + 1] * this.view.k;
+    const k = Math.max(this.view.k, 1.4);
+    this.glideTo({ k, x: this.width / 2 - pos[i * 2] * k, y: this.height / 2 - pos[i * 2 + 1] * k });
     this.select(id);
   }
 
@@ -378,6 +500,20 @@ export class GraphView {
 
   reheat(): void {
     this.layout.reheat(0.6);
+  }
+
+  /** Adopt an exact layout (radial, layered) in place of the simulation. */
+  useStaticPositions(positions: Float32Array): void {
+    this.layout.setStatic(positions);
+    this.geomCache = null;
+    this.stamp++;
+    this.dirty = true;
+  }
+
+  /** Ids currently on the canvas, in render order — the analysis works over what
+   * is shown, never over rows that were grouped or filtered away. */
+  get visibleIds(): string[] {
+    return this.nodes.map((n) => n.id);
   }
 
   /* --------------------------------------------------------------- picking -- */
@@ -445,10 +581,14 @@ export class GraphView {
     this.canvas.addEventListener("pointerdown", (ev) => {
       this.canvas.setPointerCapture(ev.pointerId);
       moved = false;
+      if (this.jumpFromMinimap(ev)) { pan = null; drag = null; return; }
       const w = this.toWorld(ev.clientX, ev.clientY);
       const hit = this.nodeAt(w.x, w.y);
       if (hit >= 0) {
         drag = { i: hit };
+        // Moving a node is taking charge of the picture: the camera stops
+        // second-guessing where the reader wants to be looking.
+        this.userMoved = true;
         this.layout.fix(hit, w.x, w.y);
         this.layout.reheat(0.25);
       } else {
@@ -466,6 +606,8 @@ export class GraphView {
       }
       if (pan) {
         moved = true;
+        this.userMoved = true;
+        this.target = null;
         this.view.x = ev.clientX - pan.x;
         this.view.y = ev.clientY - pan.y;
         this.dirty = true;
@@ -475,9 +617,19 @@ export class GraphView {
     });
 
     const end = (ev: PointerEvent): void => {
-      if (drag) {
-        this.layout.fix(drag.i, null, null);
-        if (!moved) this.select(this.nodes[drag.i].id);
+      if (drag && moved) {
+        // Sticky. A force layout that yanks a node back the instant you let go
+        // makes the graph feel like it is arguing with you — and the reason to
+        // drag a node at all is usually to put it somewhere and read it there.
+        // Double-click releases it back to the simulation.
+        this.pinned.add(drag.i);
+        this.dirty = true;
+      } else if (drag) {
+        const node = this.nodes[drag.i];
+        this.select(node.id);
+        // A bubble is a place, not a symbol: clicking it means "go in there".
+        // Only on a click — dragging one is arranging the map, not entering it.
+        if (node.type === "group" && node.path) this.onDrill(node.path);
       } else if (pan && !moved) {
         this.select(null);
       }
@@ -489,8 +641,27 @@ export class GraphView {
     this.canvas.addEventListener("pointercancel", end);
     this.canvas.addEventListener("pointerleave", () => this.setHover(-1));
 
+    // Double-click hands a node back to the simulation; on empty canvas, all of
+    // them — otherwise a graph someone has arranged has no way back.
+    this.canvas.addEventListener("dblclick", (ev) => {
+      const w = this.toWorld(ev.clientX, ev.clientY);
+      const hit = this.nodeAt(w.x, w.y);
+      if (hit >= 0) {
+        if (!this.pinned.delete(hit)) return;
+        this.layout.fix(hit, null, null);
+      } else {
+        if (this.pinned.size === 0) return;
+        for (const i of this.pinned) this.layout.fix(i, null, null);
+        this.pinned.clear();
+      }
+      this.layout.reheat(0.3);
+      this.dirty = true;
+    });
+
     this.canvas.addEventListener("wheel", (ev) => {
       ev.preventDefault();
+      this.userMoved = true;
+      this.target = null;
       const rect = this.canvas.getBoundingClientRect();
       const px = ev.clientX - rect.left;
       const py = ev.clientY - rect.top;
@@ -500,6 +671,22 @@ export class GraphView {
       this.view.k = k;
       this.dirty = true;
     }, { passive: false });
+  }
+
+  /** A press inside the minimap centres the camera there instead of panning the
+   * canvas underneath it. Returns true when it consumed the event. */
+  private jumpFromMinimap(ev: PointerEvent): boolean {
+    const m = this.minimap;
+    if (!m) return false;
+    const rect = this.canvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    if (px < m.x0 || px > m.x0 + m.w || py < m.y0 || py > m.y0 + m.h) return false;
+    const wx = m.cx + (px - m.x0 - m.w / 2) / m.scale;
+    const wy = m.cy + (py - m.y0 - m.h / 2) / m.scale;
+    this.userMoved = true;
+    this.glideTo({ k: this.view.k, x: this.width / 2 - wx * this.view.k, y: this.height / 2 - wy * this.view.k });
+    return true;
   }
 
   /** One hit-test per frame at most. Pointermove fires far faster than 60Hz, and
@@ -535,6 +722,7 @@ export class GraphView {
 
   private loop(): void {
     const run = (): void => {
+      if (this.stepCamera()) this.dirty = true;
       if (this.dirty) {
         this.dirty = false;
         this.draw();
@@ -556,7 +744,21 @@ export class GraphView {
     const pos = this.layout.positions;
     const sel = this.selected === null ? -1 : this.index.get(this.selected) ?? -1;
     const q = this.query.toLowerCase();
+    if (this.layout.hot && this.nodes.length > DRAFT_MIN_NODES) {
+      this.drawDraft(pos, k);
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      this.drawMinimap(pos);
+      return;
+    }
+
     const geom = this.ensureGeometry(pos, sel, q, k);
+    const padEarly = 40 / k;
+    const ex0 = -x / k - padEarly, ey0 = -y / k - padEarly;
+    const ex1 = ex0 + this.width / k + padEarly * 2, ey1 = ey0 + this.height / k + padEarly * 2;
+    const onScreenEarly = (i: number): boolean => {
+      const px = pos[i * 2], py = pos[i * 2 + 1];
+      return px > ex0 && px < ex1 && py > ey0 && py < ey1;
+    };
 
     // Edges under nodes, each bucket one stroke. The width floor is applied here
     // rather than baked into the path so zooming never invalidates the cache.
@@ -569,6 +771,7 @@ export class GraphView {
       ctx.stroke(b.path);
       if (b.dash.length) ctx.setLineDash([]);
     }
+    this.paintGlow(pos, k, onScreenEarly);
     for (const b of geom.nodes) {
       ctx.fillStyle = rgba(b.color, b.alpha);
       ctx.fill(b.path);
@@ -600,6 +803,49 @@ export class GraphView {
     if (k >= BADGE_MIN_K && this.showOwners) this.drawBadges(pos, k, onScreen, shown);
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.drawMinimap(pos);
+  }
+
+  /**
+   * A cheap frame, for while the layout is still moving.
+   *
+   * Every position update invalidates the built geometry, so a settling graph pays
+   * the full rebuild — 8,625 arcs and 14,000 quadratic curves — on every frame the
+   * worker posts, and the whole page drops to the layout's update rate. Nobody is
+   * reading edge grammar or node labels off a graph that is still sliding around,
+   * so while it moves this draws squares and straight lines: no trigonometry, no
+   * curves, no text, no arrowheads, one stroke and a fill per colour. The moment it
+   * settles, the real renderer takes over and the picture snaps into detail.
+   */
+  private drawDraft(pos: Float32Array, k: number): void {
+    const ctx = this.ctx;
+    const edges = new Path2D();
+    for (const e of this.edges) {
+      if (this.hiddenTypes[this.nodes[e.s].type] || this.hiddenTypes[this.nodes[e.t].type]) continue;
+      if (this.hiddenRels[chipKey(e.relation)]) continue;
+      edges.moveTo(pos[e.s * 2], pos[e.s * 2 + 1]);
+      edges.lineTo(pos[e.t * 2], pos[e.t * 2 + 1]);
+    }
+    ctx.strokeStyle = rgba(this.theme.edge, 0.34);
+    ctx.lineWidth = Math.max(1, MIN_EDGE_PX / k);
+    ctx.stroke(edges);
+
+    const buckets = new Map<string, Path2D>();
+    const minR = MIN_NODE_PX / k;
+    for (let i = 0; i < this.nodes.length; i++) {
+      const n = this.nodes[i];
+      if (this.hiddenTypes[n.type]) continue;
+      let path = buckets.get(n.type);
+      if (!path) { path = new Path2D(); buckets.set(n.type, path); }
+      // A square, not a circle: at this size the difference is invisible and `rect`
+      // costs none of the trigonometry `arc` does.
+      const r = Math.max(n.r, minR);
+      path.rect(pos[i * 2] - r, pos[i * 2 + 1] - r, r * 2, r * 2);
+    }
+    for (const [type, path] of buckets) {
+      ctx.fillStyle = rgba(this.theme.node[type] ?? this.theme.edge, 0.9);
+      ctx.fill(path);
+    }
   }
 
   /**
@@ -615,7 +861,7 @@ export class GraphView {
   { edges: Bucket[]; nodes: Bucket[]; focused: { e: SimEdge; role: "out" | "in" }[]; arrows: SimEdge[] | null } {
     const zoomBucket = Math.round(Math.log(k) / Math.log(1.3));
     const key = [
-      this.stamp, sel, q, zoomBucket,
+      this.stamp, sel, q, zoomBucket, this.spotlight ? this.spotlight.size : -1, this.spotVersion,
       Object.keys(this.hiddenTypes).filter((t) => this.hiddenTypes[t]).sort().join(","),
       Object.keys(this.hiddenRels).filter((r) => this.hiddenRels[r]).sort().join(","),
     ].join("|");
@@ -647,6 +893,7 @@ export class GraphView {
 
       const role = sel < 0 ? "none" : e.s === sel ? "out" : e.t === sel ? "in" : "far";
       if (role === "out" || role === "in") { focused.push({ e, role }); continue; }
+      let color = this.theme.edge;
 
       const fam = famOf(e.relation);
       let width = 1.3, alpha = 0.5, dash: number[] = [];
@@ -655,13 +902,21 @@ export class GraphView {
       else if (fam === "contract") { alpha = 0.55; }
       else { dash = [2, 5]; width = 1.2; alpha = 0.28; }
       if (e.confidence === "inferred") dash = [5, 4];
+      // A bundle stands for many edges; log-scaled, because a 400-reference rope
+      // next to a 4-reference thread on a linear scale is a rope and nothing else.
+      if (e.weight && e.weight > 1) { width += Math.min(7, Math.log2(e.weight) * 1.5); alpha = Math.min(0.85, alpha + 0.2); }
       if (q) alpha = 0.12;
       if (role === "far") alpha = 0.06;
+      if (this.spotlight) {
+        const lit = this.spotlight.has(this.nodes[e.s].id) && this.spotlight.has(this.nodes[e.t].id);
+        if (lit) { color = this.theme.in; alpha = 0.95; width = Math.max(width, 2.4); }
+        else alpha = 0.05;
+      }
 
-      const bucketKey = `${width}|${alpha}|${dash.join(",")}`;
+      const bucketKey = `${width}|${alpha}|${dash.join(",")}|${color}`;
       let bucket = buckets.get(bucketKey);
       if (!bucket) {
-        bucket = { path: new Path2D(), width, dash, color: this.theme.edge, alpha };
+        bucket = { path: new Path2D(), width, dash, color, alpha };
         buckets.set(bucketKey, bucket);
       }
       this.edgePath(bucket.path, pos, e);
@@ -688,6 +943,7 @@ export class GraphView {
       let alpha = 0.92;
       if (q && !n.name.toLowerCase().includes(q)) alpha *= 0.22;
       if (sel >= 0 && i !== sel && !this.neighbors.has(i)) alpha = Math.min(alpha, 0.2);
+      if (this.spotlight) alpha = this.spotlight.has(n.id) ? 0.98 : 0.07;
       const a = Math.round(alpha * 20) / 20; // quantised: keeps the bucket count tiny
       const key = `${n.type}|${a}`;
       let bucket = buckets.get(key);
@@ -702,6 +958,99 @@ export class GraphView {
     return [...buckets.values()];
   }
 
+  /**
+   * The whole graph in the corner, with a box showing where you are in it.
+   *
+   * Zoomed in on a graph this size there is no other way to know whether you are
+   * looking at the middle of everything or one forgotten corner. Drawn in screen
+   * space after the world transform is dropped, on the same canvas — a second
+   * canvas element would need its own resize, DPR and theme handling for a
+   * picture that is 150 pixels wide.
+   *
+   * It draws from a cached down-sampled copy of the positions rather than all
+   * 26k, because it repaints on every pan.
+   */
+  private drawMinimap(pos: Float32Array): void {
+    if (this.nodes.length < MINIMAP_MIN_NODES || this.width < 520) return;
+    const ctx = this.ctx;
+    const w = MINIMAP_W;
+    const h = Math.round(w * (this.height / this.width));
+    const x0 = this.width - w - 12;
+    const y0 = 12;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < this.nodes.length; i++) {
+      const px = pos[i * 2], py = pos[i * 2 + 1];
+      if (px < minX) minX = px;
+      if (py < minY) minY = py;
+      if (px > maxX) maxX = px;
+      if (py > maxY) maxY = py;
+    }
+    const span = Math.max(maxX - minX, maxY - minY) || 1;
+    const scale = Math.min(w, h) / (span * 1.06);
+    const toX = (v: number) => x0 + w / 2 + (v - (minX + maxX) / 2) * scale;
+    const toY = (v: number) => y0 + h / 2 + (v - (minY + maxY) / 2) * scale;
+
+    ctx.fillStyle = rgba(this.theme.panel, 0.82);
+    ctx.strokeStyle = rgba(this.theme.edge, 0.5);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(x0, y0, w, h);
+    ctx.fill();
+    ctx.stroke();
+
+    // Every Nth node: the shape of the graph, not a census of it.
+    const stride = Math.max(1, Math.floor(this.nodes.length / MINIMAP_SAMPLES));
+    ctx.fillStyle = rgba(this.theme.ink, 0.45);
+    for (let i = 0; i < this.nodes.length; i += stride) {
+      if (this.hiddenTypes[this.nodes[i].type]) continue;
+      ctx.fillRect(toX(pos[i * 2]), toY(pos[i * 2 + 1]), 1.3, 1.3);
+    }
+
+    // Where the camera is: the world rectangle currently on screen.
+    const k = this.view.k;
+    const vx = toX(-this.view.x / k);
+    const vy = toY(-this.view.y / k);
+    const vw = (this.width / k) * scale;
+    const vh = (this.height / k) * scale;
+    ctx.strokeStyle = this.theme.in;
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(
+      Math.max(x0, vx), Math.max(y0, vy),
+      Math.min(vw, x0 + w - Math.max(x0, vx)),
+      Math.min(vh, y0 + h - Math.max(y0, vy)),
+    );
+    this.minimap = { x0, y0, w, h, scale, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+  }
+
+  /**
+   * A soft halo behind the best-connected nodes.
+   *
+   * Not decoration: in a field of same-sized dots the hubs are the only thing
+   * worth looking at first, and radius alone caps out too early to distinguish a
+   * degree-8 node from a degree-60 one. Capped and gated on zoom, because a glow
+   * per node is a radial gradient per node.
+   */
+  private paintGlow(pos: Float32Array, k: number, onScreen: (i: number) => boolean): void {
+    if (this.hubIndices.length === 0) return;
+    const ctx = this.ctx;
+    for (const i of this.hubIndices) {
+      if (!onScreen(i) || this.hiddenTypes[this.nodes[i].type]) continue;
+      if (this.spotlight && !this.spotlight.has(this.nodes[i].id)) continue;
+      const n = this.nodes[i];
+      const x = pos[i * 2], y = pos[i * 2 + 1];
+      const r = Math.max(n.r, MIN_NODE_PX / k) * 2.6;
+      const g = ctx.createRadialGradient(x, y, n.r * 0.5, x, y, r);
+      const color = this.theme.node[n.type] ?? this.theme.edge;
+      g.addColorStop(0, rgba(color, 0.30));
+      g.addColorStop(1, rgba(color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   /** The selected and hovered outlines — two circles, redrawn every frame because
    * hover changes far more often than the geometry does. */
   private paintRings(pos: Float32Array, sel: number, k: number): void {
@@ -714,6 +1063,7 @@ export class GraphView {
       ctx.arc(pos[i * 2], pos[i * 2 + 1], this.nodes[i].r + pad, 0, Math.PI * 2);
       ctx.stroke();
     };
+    for (const i of this.pinned) ring(i, this.theme.out, 0.7, 3, 1.4);
     if (sel >= 0) ring(sel, this.theme.node[this.nodes[sel].type] ?? this.theme.edge, 0.55, 5, 1.6);
     if (this.hover >= 0 && this.hover !== sel) ring(this.hover, this.theme.ink, 0.35, 4, 1.2);
   }

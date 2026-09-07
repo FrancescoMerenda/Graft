@@ -6,7 +6,7 @@
   --chip:#F0F3F3;
   --sys:#4A7DF0; --con:#A06BDB; --fil:#D98E2B; --api:#C95CB8;
   --k-file:#D98E2B; --k-class:#4A7DF0; --k-fn:#4F86C6; --k-method:#3AA7C9; --k-iface:#A06BDB; --k-type:#C95CB8; --k-enum:#B69B3D;
-  --edge:#9AA4A9; --canvas:#F8FAFA;
+  --edge:#9AA4A9; --canvas:#F8FAFA; --k-group:#3F9E7C;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -15,7 +15,7 @@
     --chip:#1C2125;
     --sys:#6B94F5; --con:#B487E0; --fil:#E0A04A; --api:#D183C9;
     --k-file:#E0A04A; --k-class:#6B94F5; --k-fn:#7EAEDD; --k-method:#56B9D8; --k-iface:#B487E0; --k-type:#D183C9; --k-enum:#D4BB5E;
-    --edge:#4A545B; --canvas:#101315;
+    --edge:#4A545B; --canvas:#101315; --k-group:#5FC79E;
   }
 }
 :root[data-theme="dark"]{
@@ -24,7 +24,7 @@
   --chip:#1C2125;
   --sys:#6B94F5; --con:#B487E0; --fil:#E0A04A; --api:#D183C9;
   --k-file:#E0A04A; --k-class:#6B94F5; --k-fn:#7EAEDD; --k-method:#56B9D8; --k-iface:#B487E0; --k-type:#D183C9; --k-enum:#D4BB5E;
-  --edge:#4A545B; --canvas:#101315;
+  --edge:#4A545B; --canvas:#101315; --k-group:#5FC79E;
 }
 :root[data-theme="light"]{
   --bg:#F4F6F6; --panel:#FFFFFF; --panel2:#FBFCFC; --ink:#17191B; --muted:#6B7278;
@@ -32,7 +32,7 @@
   --chip:#F0F3F3;
   --sys:#4A7DF0; --con:#A06BDB; --fil:#D98E2B; --api:#C95CB8;
   --k-file:#D98E2B; --k-class:#4A7DF0; --k-fn:#4F86C6; --k-method:#3AA7C9; --k-iface:#A06BDB; --k-type:#C95CB8; --k-enum:#B69B3D;
-  --edge:#9AA4A9; --canvas:#F8FAFA;
+  --edge:#9AA4A9; --canvas:#F8FAFA; --k-group:#3F9E7C;
 }
 
 *{box-sizing:border-box}
@@ -157,3 +157,22 @@ canvas.graph:active{cursor:grabbing}
 .own-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .own-why{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .own-note{font-size:11px;color:var(--muted);padding:3px 8px 0;line-height:1.45}
+
+/* ---------- graph tools: grouping, layout, and the analysis findings ---------- */
+/* Bottom-left is the only quiet corner left: edges chip along the top, the legend
+   sits bottom-centre, zoom bottom-right. */
+.tools{position:absolute;left:12px;top:44px;display:flex;flex-direction:column;gap:6px;
+  align-items:flex-start;z-index:4;max-width:min(46ch,44vw)}
+.toolrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+  background:color-mix(in srgb, var(--panel) 88%, transparent);
+  border:1px solid var(--border);border-radius:9px;padding:4px 7px}
+.sel{background:var(--chip);color:var(--ink);border:1px solid var(--border);border-radius:6px;
+  font:inherit;font-size:11.5px;padding:2px 5px}
+.crumbs{display:flex;gap:3px;align-items:center;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.crumbs button{background:none;border:none;color:var(--accent);cursor:pointer;font:inherit;padding:0 2px}
+.crumbs button:hover{text-decoration:underline}
+.crumbs .sep{opacity:.5}
+/* A finding is an answer, not chrome — it gets the accent and its own card. */
+.finding{background:color-mix(in srgb, var(--panel) 92%, transparent);border:1px solid var(--accent);
+  border-radius:9px;padding:5px 8px;font-size:11.5px;color:var(--ink);line-height:1.45}
+.finding b{color:var(--accent)}

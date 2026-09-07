@@ -11,7 +11,7 @@
  * structured-cloning 26k objects per frame would cost more than the layout itself.
  */
 import {
-  forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide,
+  forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY,
   type Simulation, type SimulationNodeDatum,
 } from "d3-force";
 
@@ -32,15 +32,15 @@ export interface SimSpec {
 }
 
 /**
- * Above this, collision is dropped.
+ * Collision runs at every size.
  *
- * Measured on a 26k-node graph: charge+link+center is 88ms a tick and adding
- * collide takes it to 138ms — a 56% tax for separation that is invisible at a
- * density where the nodes are already further apart than their own radii. Below
- * the threshold the graph is sparse enough for overlap to actually show, and the
- * force is cheap enough not to matter.
+ * It was dropped above a few thousand nodes when the layout still ran on the main
+ * thread, where its 88ms → 138ms a tick came straight out of the frame budget.
+ * In a worker that cost buys nothing back: it makes the layout take longer in
+ * wall-clock seconds and costs the UI nothing at all. And without it a large
+ * graph piles nodes on top of each other, which is the one thing a reader
+ * immediately reads as broken.
  */
-const COLLIDE_MAX_NODES = 4000;
 
 interface Body extends SimulationNodeDatum {
   index: number;
@@ -81,17 +81,29 @@ export class Layout {
       // in layout quality. Half of a wiring graph this size has no edges at all, and
       // long-range repulsion is the only force acting on those nodes — cut it and
       // they never leave the positions they were seeded at.
-      .force("charge", forceManyBody<Body>().strength(-220).theta(0.9))
+      // Repulsion scaled by radius. A fixed strength is tuned for same-sized dots
+      // and leaves rolled-up module bubbles overlapping each other, which hides the
+      // very bundles between them that the grouped view exists to show.
+      .force("charge", forceManyBody<Body>().strength((b) => -220 - b.r * 16).theta(0.9))
       .force(
         "link",
         forceLink<Body, { source: Body; target: Body; distance: number }>(links)
           .distance((l) => l.distance)
           .strength(0.5),
       )
-      .force("center", forceCenter<Body>(spec.width / 2, spec.height / 2));
-    if (spec.count <= COLLIDE_MAX_NODES) {
-      this.sim.force("collide", forceCollide<Body>().radius((b) => b.r + 6));
-    }
+      .force("center", forceCenter<Body>(spec.width / 2, spec.height / 2))
+      // Gravity, weak but essential. `forceCenter` only translates the system as a
+      // whole; it exerts nothing on an individual node, so anything with no links
+      // is pushed outward by charge and never pulled back. On a wiring graph —
+      // where half the symbols have no edges, and whole modules can have no
+      // cross-module reference — those escape to arbitrary distance, and a
+      // "fit the graph" view then has to zoom out past the point of legibility to
+      // frame a few strays. Two axis springs cost one multiply per node per tick.
+      .force("gx", forceX<Body>(spec.width / 2).strength(0.02))
+      .force("gy", forceY<Body>(spec.height / 2).strength(0.02));
+    // Two passes rather than one: a single pass leaves visible overlap in the
+    // dense core of a real wiring graph, which is exactly where people look.
+    this.sim.force("collide", forceCollide<Body>().radius((b) => b.r + 14).iterations(2));
   }
 
   /** Advance the layout. `alpha` decays exactly as it would under d3's own timer. */

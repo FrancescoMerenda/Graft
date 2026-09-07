@@ -34,7 +34,7 @@ const INLINE_BUDGET_MS = 8;
 
 export class LayoutDriver {
   /** Live positions, `[x0,y0,x1,y1,…]`, index-aligned with the node array. */
-  positions = new Float32Array(0);
+  positions: Float32Array = new Float32Array(0);
   /** True while the layout is still moving. */
   hot = false;
   /** Called after every position update the renderer should draw. */
@@ -118,13 +118,41 @@ export class LayoutDriver {
     this.inline = null;
   }
 
+  /**
+   * Adopt positions computed elsewhere — the radial and layered layouts, which are
+   * exact rather than iterative. The simulation is stopped rather than seeded: a
+   * structural layout that then drifts under a force is neither of the two things
+   * the reader asked for.
+   */
+  setStatic(positions: Float32Array<ArrayBufferLike>): void {
+    this.stopInline();
+    this.post({ type: "stop" });
+    this.positions = positions;
+    this.hot = false;
+    this.onFrame();
+  }
+
   reheat(alpha = 0.6): void {
     if (this.worker) { this.post({ type: "reheat", alpha }); return; }
     this.inline?.reheat(alpha);
     if (this.inline && !this.hot) { this.hot = true; this.runInline(); }
   }
 
+  /**
+   * Pin or release one node.
+   *
+   * The pinned position is written into the local buffer as well as sent to the
+   * layout, because the layout answers a batch of ticks later — up to ~180ms on a
+   * large graph — and a node that trails the cursor by that much reads as stuck
+   * rather than dragged. The worker converges on the same place; this just stops
+   * the wait from being visible.
+   */
   fix(index: number, x: number | null, y: number | null): void {
+    if (x !== null && y !== null && this.positions.length > index * 2 + 1) {
+      this.positions[index * 2] = x;
+      this.positions[index * 2 + 1] = y;
+      this.onFrame();
+    }
     if (this.worker) { this.post({ type: "fix", index, x, y }); return; }
     this.inline?.fix(index, x, y);
   }

@@ -11,6 +11,11 @@ export interface VizNode {
   sources: string[];
   evidence?: Evidence[];
   owners?: NodeOwner[];
+  /** Source path, carried explicitly so grouping never has to parse it back out
+   * of a display string. Absent on context nodes, which have no single file. */
+  path?: string;
+  /** Symbols behind a rolled-up group node — see viewer/aggregate.ts. */
+  count?: number;
 }
 
 /** A contributor on a node — see `NodeOwner` in src/viz/assemble.ts. */
@@ -28,6 +33,8 @@ export interface VizEdge {
   relation: string;
   description?: string;
   confidence?: "extracted" | "inferred";
+  /** Edges behind a rolled-up bundle; drives stroke width when grouped. */
+  weight?: number;
 }
 
 export interface EvidenceLine {
@@ -102,11 +109,14 @@ export const CHIP_HINT: Record<string, string> = {
 // blue for what depends on it. The legend labels itself from these type names.
 const CONTEXT_COLORS: Record<string, string> = {
   system: "--sys", concept: "--con", file: "--fil", api: "--api",
-  changed: "--fil", affected: "--sys",
+  changed: "--fil", affected: "--sys", group: "--k-group",
 };
 const CODE_COLORS: Record<string, string> = {
   file: "--k-file", class: "--k-class", function: "--k-fn", method: "--k-method",
   interface: "--k-iface", type: "--k-type", enum: "--k-enum",
+  // A rolled-up directory is not one of the code kinds — it needs its own colour
+  // or it would masquerade as whichever kind it borrowed.
+  group: "--k-group",
 };
 
 export function colorToken(tab: "context" | "code", type: string): string {
@@ -162,6 +172,7 @@ export async function loadCodeGraph(): Promise<VizGraph | null> {
     type: n.kind,
     summary: n.summary ?? n.signature ?? "",
     sources: [`${n.path} · ${n.span}`],
+    path: n.path,
   }));
   const known = new Set(nodes.map((n) => n.id));
   // imports edges may point at unresolved module strings — drop those for rendering
