@@ -134,6 +134,17 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
   },
 ];
 
+/**
+ * Ids are scope-qualified (`A.Run` for a method on class `A`), so a snippet's
+ * expectation names the symbol, not the whole id. A language with no enclosing
+ * scope still produces a bare `run`, and both forms match here — which is the
+ * point: the assertion says "this symbol", not "this id shape".
+ */
+const isDef = (id: string, name: string): boolean => {
+  const local = id.slice(id.indexOf("#") + 1);
+  return local === name || local.endsWith(`.${name}`);
+};
+
 for (const s of SNIPPETS) {
   test(`breadth tier: ${s.lang} — defs + a call that the resolver resolves`, async () => {
     await warmGenericGrammars([s.lang]);
@@ -142,9 +153,9 @@ for (const s of SNIPPETS) {
     const kinds = nodes.filter((n) => n.kind !== "file").map((n) => `${n.kind}:${n.name}`).sort();
     assert.deepEqual(kinds, s.defs, `${s.lang} definitions`);
     const edges = resolveEdges(nodes, rawEdges);
-    const call = edges.find((e) => e.relation === "calls" && e.source.endsWith(`#${s.call[0]}`));
+    const call = edges.find((e) => e.relation === "calls" && isDef(e.source, s.call[0]));
     assert.ok(call, `${s.lang}: ${s.call[0]}'s call edge exists and is attributed to the caller`);
-    assert.equal(call?.target, `${s.file}#${s.call[1]}`, `${s.lang}: resolved ${s.call[0]}→${s.call[1]}`);
+    assert.ok(call && isDef(call.target, s.call[1]), `${s.lang}: resolved ${s.call[0]}→${s.call[1]} (got ${call?.target})`);
   });
 }
 
@@ -169,7 +180,7 @@ test("breadth tier: Java extends/implements/new become resolved references edges
   // extends + implements are attributed to the declaring class; `new Base()` to the method
   assert.ok(pairs.includes("Dog→Base"), `Dog extends Base (got ${pairs.join(", ")})`);
   assert.ok(pairs.includes("Dog→Animal"), "Dog implements Animal");
-  assert.ok(pairs.includes("make→Base"), "make() references Base via `new Base()`");
+  assert.ok(pairs.includes("Dog.make→Base"), `make() references Base via \`new Base()\`, scoped to its class (got ${pairs.join(", ")})`);
   // same-file targets resolve as certain
   assert.ok(refs.every((e) => e.confidence === "extracted"), "same-file references are extracted");
   // an external/undefined supertype is dropped, not emitted as a bogus edge
@@ -327,7 +338,7 @@ test("Dart top-level functions/consts become symbols; call edges resolve; body l
     .filter((e) => e.relation === "calls")
     .map((e) => `${e.source.split("#")[1]}→${e.target.split("#")[1]}`);
   assert.ok(calls.includes("describe→isReady"), `describe → isReady (got ${calls.join(", ")})`);
-  assert.ok(calls.includes("ready→isReady"), `Counter.ready → isReady (got ${calls.join(", ")})`);
+  assert.ok(calls.includes("Counter.ready→isReady"), `Counter.ready → isReady (got ${calls.join(", ")})`);
 });
 
 test("Dart file-level skeleton lists the API, not function-body locals (#134)", async () => {
