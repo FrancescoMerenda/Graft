@@ -18,9 +18,106 @@ import { pathOf } from "./aggregate.js";
 export type LayoutMode = "force" | "radial" | "layered";
 
 /** Comfortable spacing in world units; the view fits itself to whatever comes out. */
-const RING_GAP = 240;
 const LAYER_GAP = 220;
 const NODE_GAP = 70;
+
+/**
+ * How much of a disc its contents are allowed to occupy.
+ *
+ * Everything below sizes discs from the AREA of what goes in them rather than
+ * from a constant, which is the whole difference between a seed that is already
+ * roughly right and one the forces have to spend their entire run untangling.
+ * A quarter full looks generously spaced; a half-full outer disc keeps the whole
+ * graph compact enough to read.
+ */
+const INNER_FILL = 0.25;
+const OUTER_FILL = 0.5;
+
+/** Directory depth used to cluster loose symbols when seeding. Two levels is what
+ * the aggregation view defaults to, so a seeded graph and a grouped one put the
+ * same things in the same place. */
+const SEED_DEPTH = 2;
+
+/** The golden angle. Successive points at this angle never line up into spokes,
+ * which is what makes a sunflower spiral look evenly filled at any count. */
+const GOLDEN_ANGLE = 2.39996323;
+
+/** Radius a disc needs to hold circles of these radii at `fill` density. */
+function discRadius(radii: number[], fill: number): number {
+  let area = 0;
+  for (const r of radii) area += r * r; // the pi cancels against the disc's own
+  return Math.sqrt(area / fill);
+}
+
+/** Points spread evenly over a disc of radius `R`, densest-packing-first. */
+function sunflower(i: number, count: number, R: number): [number, number] {
+  const a = i * GOLDEN_ANGLE;
+  // sqrt keeps the density uniform; without it everything piles at the centre.
+  const r = R * Math.sqrt((i + 0.5) / count);
+  return [Math.cos(a) * r, Math.sin(a) * r];
+}
+
+/** Which cluster a node seeds into: a rolled-up bubble is its own, a loose symbol
+ * joins its directory. */
+function clusterKeyOf(node: VizNode): string {
+  if (node.type === "group") return node.path ?? node.id;
+  const dirs = pathOf(node).split("/").slice(0, -1);
+  return dirs.slice(0, SEED_DEPTH).join("/") || "·";
+}
+
+/**
+ * Starting positions: clustered by directory, spread by how much has to fit.
+ *
+ * A force layout is largely decided by where it starts. Seeding every node on one
+ * disc of a fixed size put 26,000 symbols — or 66 module bubbles whose radii run
+ * to 60 units — inside a few hundred units of each other, so the run began as one
+ * solid pile and spent itself pushing outward instead of arranging anything. Worse,
+ * a blind seed scatters each directory's symbols across the whole disc, and no
+ * amount of simulation brings them back together: the links that would pull them
+ * are outnumbered by the repulsion that will not.
+ *
+ * So the seed does the organising, and the forces refine it. Every disc — each
+ * cluster, and the disc of clusters — is sized from the area of its contents, so
+ * the arrangement is equally spaced whether it holds twelve nodes or twelve
+ * thousand.
+ */
+export function seedPositions(nodes: VizNode[], radii: Float32Array, width: number, height: number): Float32Array {
+  const out = new Float32Array(nodes.length * 2);
+  if (nodes.length === 0) return out;
+
+  const clusters = new Map<string, number[]>();
+  for (let i = 0; i < nodes.length; i++) {
+    const key = clusterKeyOf(nodes[i]);
+    const c = clusters.get(key);
+    if (c) c.push(i);
+    else clusters.set(key, [i]);
+  }
+
+  // Biggest first, so the largest clusters take the middle and the long tail of
+  // one-file directories rings the outside instead of splitting the core.
+  const keys = [...clusters.keys()].sort(
+    (a, b) => clusters.get(b)!.length - clusters.get(a)!.length || a.localeCompare(b),
+  );
+  const clusterRadius = new Map<string, number>();
+  for (const key of keys) {
+    clusterRadius.set(key, discRadius(clusters.get(key)!.map((i) => radii[i]), INNER_FILL));
+  }
+  const outer = discRadius([...clusterRadius.values()], OUTER_FILL);
+
+  const cx = width / 2;
+  const cy = height / 2;
+  keys.forEach((key, gi) => {
+    const [gx, gy] = keys.length === 1 ? [0, 0] : sunflower(gi, keys.length, outer);
+    const members = clusters.get(key)!;
+    const R = clusterRadius.get(key)!;
+    members.forEach((idx, j) => {
+      const [mx, my] = members.length === 1 ? [0, 0] : sunflower(j, members.length, R);
+      out[idx * 2] = cx + gx + mx;
+      out[idx * 2 + 1] = cy + gy + my;
+    });
+  });
+  return out;
+}
 
 /**
  * One ring per directory, rings laid out around a larger circle.
@@ -42,18 +139,23 @@ export function radialLayout(nodes: VizNode[], depth = 2): Float32Array {
   const order = new Map(nodes.map((n, i) => [n.id, i]));
   const out = new Float32Array(nodes.length * 2);
   const keys = [...groups.keys()].sort();
-  // Ring radius grows with the square root of the group count so the outer ring
-  // does not run away from the centre on a repo with many directories.
-  const outer = RING_GAP * Math.sqrt(keys.length);
+
+  // Each ring's radius is whatever its own members need at NODE_GAP spacing, and
+  // the circle the rings sit on is big enough for the largest of them — so one
+  // 1,200-symbol directory can no longer swallow its neighbours.
+  const ringRadius = new Map<string, number>();
+  for (const key of keys) {
+    ringRadius.set(key, Math.max(NODE_GAP, (groups.get(key)!.length * NODE_GAP) / (Math.PI * 2)));
+  }
+  const widest = Math.max(...ringRadius.values());
+  const outer = Math.max(widest * 2, (keys.length * widest * 2.2) / (Math.PI * 2));
 
   keys.forEach((key, gi) => {
     const members = groups.get(key)!;
     const angle = (gi / keys.length) * Math.PI * 2;
     const cx = Math.cos(angle) * outer;
     const cy = Math.sin(angle) * outer;
-    // Circumference has to fit every member at NODE_GAP spacing, or a 1200-symbol
-    // directory becomes a solid disc.
-    const r = Math.max(NODE_GAP, (members.length * NODE_GAP) / (Math.PI * 2));
+    const r = ringRadius.get(key)!;
     members.forEach((n, i) => {
       const a = (i / members.length) * Math.PI * 2;
       const at = order.get(n.id)!;

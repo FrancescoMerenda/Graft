@@ -29,6 +29,7 @@ import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colo
 import { initials } from "./detail.js";
 import { LayoutDriver } from "./sim.js";
 import type { SimSpec } from "./sim-core.js";
+import { seedPositions } from "./layouts.js";
 
 /** A node as the renderer needs it. Positions live in the layout's flat buffer,
  * never here — copying 26k pairs into objects every frame is exactly the per-tick
@@ -87,8 +88,9 @@ const LABEL_FONT = '600 11.5px ui-sans-serif, system-ui, -apple-system, "Segoe U
 const ARROW_MIN_K = 0.9;
 const MAX_ARROWS = 3000;
 
-/** Share of nodes ignored at each end of each axis when fitting the view. */
-const FIT_TRIM = 0.015;
+/** How far past the quartiles a point may sit and still be framed. 1.5 is Tukey's
+ * own constant and is what "outlier" conventionally means. */
+const FENCE = 1.5;
 
 /** Below this a full-detail frame is cheap enough that a moving graph never needs
  * the draft pass — and a small graph is where the detail actually reads. */
@@ -120,6 +122,21 @@ interface Theme {
   out: string;
   in: string;
   node: Record<string, string>;
+}
+
+/** Tukey fences over sorted values, clamped to the data that actually exists —
+ * so a tight cluster is never framed wider than itself. */
+function fence(sorted: Float64Array, pad: number): [number, number] {
+  const n = sorted.length;
+  if (n === 0) return [-pad, pad];
+  const q = (p: number): number => sorted[Math.min(n - 1, Math.max(0, Math.round((n - 1) * p)))];
+  const q1 = q(0.25);
+  const q3 = q(0.75);
+  const iqr = q3 - q1;
+  return [
+    Math.max(sorted[0], q1 - iqr * FENCE) - pad,
+    Math.min(sorted[n - 1], q3 + iqr * FENCE) + pad,
+  ];
 }
 
 function rgba(color: string, alpha: number): string {
@@ -285,23 +302,20 @@ export class GraphView {
         ? 14 + Math.min(52, Math.sqrt(n.count) * 3.4)
         : 11 + Math.min(13, d * 2.6);
       radii[i] = r;
-      const prev = prevIndex.get(n.id);
+      return { id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r, path: n.path, count: n.count };
+    });
+
+    // Seed clustered by directory and spaced by area (see ./layouts.ts), then let
+    // anything that already had a position keep it — morphing between two views of
+    // the same graph should move what changed and nothing else.
+    positions.set(seedPositions(graph.nodes, radii, W, H));
+    for (let i = 0; i < count; i++) {
+      const prev = prevIndex.get(graph.nodes[i].id);
       if (prev !== undefined && prevPos.length > prev * 2 + 1) {
         positions[i * 2] = prevPos[prev * 2];
         positions[i * 2 + 1] = prevPos[prev * 2 + 1];
-      } else {
-        // A disc, not a ring. Seeding every node on one circle is invisible when a
-        // graph is small and connected, but a wiring graph this size is mostly
-        // isolated symbols that no spring ever pulls inward — they stay exactly
-        // where they were put, and the ring becomes the picture. `sqrt` keeps the
-        // disc uniformly dense instead of piling everything at the centre.
-        const angle = i * 2.399963; // golden angle: no radial banding
-        const spread = (Math.min(W, H) / 3) * Math.sqrt((i + 0.5) / count);
-        positions[i * 2] = W / 2 + Math.cos(angle) * spread;
-        positions[i * 2 + 1] = H / 2 + Math.sin(angle) * spread;
       }
-      return { id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r, path: n.path, count: n.count };
-    });
+    }
 
     this.index = new Map(this.nodes.map((n, i) => [n.id, i]));
 
@@ -459,20 +473,18 @@ export class GraphView {
   resetView(): void {
     const pos = this.layout.positions;
     if (pos.length === 0) { this.view = { x: 0, y: 0, k: 1 }; this.dirty = true; return; }
-    // Fit the bulk, not the extremes. A handful of unconnected symbols drift far
-    // from everything else, and framing them shrinks the part anyone came to look
-    // at to a smudge in the middle. Trimming a few percent off each axis keeps the
-    // strays reachable — by panning, or from the minimap — without letting three of
-    // them decide the zoom for the other 26,000.
-    const xs = new Float64Array(this.nodes.length);
-    const ys = new Float64Array(this.nodes.length);
-    for (let i = 0; i < this.nodes.length; i++) { xs[i] = pos[i * 2]; ys[i] = pos[i * 2 + 1]; }
-    xs.sort(); ys.sort();
-    const cut = Math.floor(this.nodes.length * FIT_TRIM);
-    const lo = cut, hi = this.nodes.length - 1 - cut;
+    // Fit the bulk, not the extremes. Unconnected modules drift far from everything
+    // else, and framing them shrinks the part anyone came to look at to a smudge in
+    // the middle. Tukey fences rather than a fixed percentile: a percentile has to
+    // be told how many outliers to expect, and rounds down to zero on a graph of
+    // sixty — the exact case where three strays do the most damage. The fences
+    // adapt to the spread itself, so a graph with no strays is framed whole.
+    // Anything outside stays reachable by panning or from the minimap.
+    const xs = Float64Array.from(this.nodes, (_, i) => pos[i * 2]).sort();
+    const ys = Float64Array.from(this.nodes, (_, i) => pos[i * 2 + 1]).sort();
     const pad = 40;
-    const minX = xs[lo] - pad, maxX = xs[hi] + pad;
-    const minY = ys[lo] - pad, maxY = ys[hi] + pad;
+    const [minX, maxX] = fence(xs, pad);
+    const [minY, maxY] = fence(ys, pad);
     const w = Math.max(1, maxX - minX);
     const h = Math.max(1, maxY - minY);
     const k = this.clampK(Math.min(this.width / w, this.height / h) * 0.92);

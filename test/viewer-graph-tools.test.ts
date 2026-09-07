@@ -228,3 +228,45 @@ test("group labels never render two identical names", () => {
   assert.ok(names.includes("a/web"), `got ${names.join(", ")}`);
   assert.ok(names.includes("b/web"), `got ${names.join(", ")}`);
 });
+
+test("seedPositions clusters by directory and scales the spread to what must fit", async () => {
+  const { seedPositions } = await import("../viewer/layouts.js");
+  const nodes = [
+    node("libs/mcl/a.cpp#one", "libs/mcl/a.cpp"),
+    node("libs/mcl/a.cpp#two", "libs/mcl/a.cpp"),
+    node("libs/mcl/b.cpp#three", "libs/mcl/b.cpp"),
+    node("libs/sip/s.cpp#four", "libs/sip/s.cpp"),
+    node("libs/sip/s.cpp#five", "libs/sip/s.cpp"),
+  ];
+  const radii = Float32Array.from([12, 12, 12, 12, 12]);
+  const pos = seedPositions(nodes, radii, 800, 600);
+  const at = (i: number) => [pos[i * 2], pos[i * 2 + 1]] as const;
+  const gap = (a: number, b: number) => Math.hypot(at(a)[0] - at(b)[0], at(a)[1] - at(b)[1]);
+
+  // Same directory starts together; different directories start apart.
+  const within = Math.max(gap(0, 1), gap(0, 2), gap(1, 2));
+  const between = Math.min(gap(0, 3), gap(0, 4), gap(2, 3));
+  assert.ok(between > within, `mcl and sip should seed apart (within ${within.toFixed(0)}, between ${between.toFixed(0)})`);
+
+  // Nobody starts on top of anybody: the pile the forces used to untangle.
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      assert.ok(gap(i, j) > radii[i], `${i} and ${j} overlap at spawn (${gap(i, j).toFixed(1)})`);
+    }
+  }
+});
+
+test("seedPositions spreads a big graph further than a small one", async () => {
+  const { seedPositions } = await import("../viewer/layouts.js");
+  const make = (n: number) => {
+    const nodes = Array.from({ length: n }, (_, i) => node(`d${i % 7}/f.c#s${i}`, `d${i % 7}/f.c`));
+    return seedPositions(nodes, Float32Array.from(nodes.map(() => 12)), 800, 600);
+  };
+  const extent = (pos: Float32Array) => {
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < pos.length; i += 2) { min = Math.min(min, pos[i]); max = Math.max(max, pos[i]); }
+    return max - min;
+  };
+  // Area-based sizing: 400 nodes need meaningfully more room than 40.
+  assert.ok(extent(make(400)) > extent(make(40)) * 2, "the seed disc grows with what goes in it");
+});
