@@ -10,7 +10,6 @@ import Parser from "tree-sitter";
 import TypeScript from "tree-sitter-typescript";
 import Python from "tree-sitter-python";
 import Go from "tree-sitter-go";
-import R from "tree-sitter-r";
 import Java from "tree-sitter-java";
 import Kotlin from "tree-sitter-kotlin";
 import Swift from "tree-sitter-swift";
@@ -18,7 +17,22 @@ import PHP from "tree-sitter-php";
 import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
 import { collectBindings, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
+import { fixTreeSitterRPrebuilds } from "./tree-sitter-r-prebuild.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
+
+/**
+ * The R grammar loads dynamically, alone among the nine.
+ *
+ * Its prebuilt binary ships under the wrong name (see `./tree-sitter-r-prebuild.ts`)
+ * and the rename has to land before the binding is required. A static import cannot
+ * express that ordering: Bun links CommonJS dependencies before it evaluates this
+ * module's own body, so a side-effect import placed above the grammar still loses
+ * the race. Repairing, then awaiting the grammar, is the one order both runtimes
+ * honour — and it costs a single top-level await on a module that already parses
+ * nine native grammars.
+ */
+fixTreeSitterRPrebuilds();
+const R = (await import("tree-sitter-r")).default;
 
 export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r";
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * `graft` CLI. Commands: build, ask, check, viz, mcp, callers, skeleton, grep,
  * map, init. Git is the sync: commit graft/ and a clone has the graph. A
@@ -37,7 +37,7 @@ import { planInit, selectedWrites } from "./hosts/plan.js";
 import { planRetract, runRetract, changed, type Retraction } from "./hosts/retract.js";
 import { formatNonInteractiveHelp, formatPlan, runPicker } from "./cli-picker.js";
 import { homedir } from "node:os";
-import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, runUpgrade } from "./cli-meta.js";
+import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, INSTALL_MANAGER, readCurrentVersion, runUpgrade } from "./cli-meta.js";
 import { patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
@@ -213,7 +213,7 @@ const UPKEEP_SKIP = new Set(["version", "upgrade", "_update-check", "mcp"]);
 program.hook("preAction", (_parent, action) => {
   if (UPKEEP_SKIP.has(action.name())) return;
   maybeRefreshInBackground();
-  const nudge = formatUpdateNudge(currentVersion, readUpdateCache()?.latest);
+  const nudge = formatUpdateNudge(currentVersion, readUpdateCache()?.latest, INSTALL_MANAGER);
   if (nudge) console.error(nudge);
   // Telemetry, in the order a user should experience it: disclose first, then
   // record, then (at most once a day, detached) send. Every step is a no-op in a

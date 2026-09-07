@@ -9,6 +9,9 @@ import {
   resolvePackageJsonPath,
   readCurrentVersion,
   isRunningViaNpx,
+  isRunningViaBunx,
+  detectInstallManager,
+  globalInstallCommand,
 } from '../src/cli-meta.js';
 
 // --- formatVersionReport: pure formatting, injected npm-view results (no network) ---
@@ -34,6 +37,18 @@ test('formatUpgradeReport: npx no-op suggests a permanent install', () => {
   const out = formatUpgradeReport({ ran: false, ok: true, oldVersion: '0.4.4' });
   assert.match(out, /npx/);
   assert.match(out, /npm install -g @nanonets\/graft/);
+});
+
+test('formatUpgradeReport: bunx no-op suggests the bun install, not the npm one', () => {
+  const out = formatUpgradeReport({ ran: false, ok: true, oldVersion: '0.4.4', manager: 'bun' });
+  assert.match(out, /bunx/);
+  assert.match(out, /bun add -g @nanonets\/graft/);
+  assert.doesNotMatch(out, /npm/);
+});
+
+test('formatUpgradeReport: a failed bun install names the bun command', () => {
+  const out = formatUpgradeReport({ ran: true, ok: false, oldVersion: '0.4.4', manager: 'bun', errorMessage: 'ENOENT' });
+  assert.match(out, /bun add -g @nanonets\/graft@latest failed/);
 });
 
 test('formatUpgradeReport: successful upgrade shows old -> new', () => {
@@ -86,4 +101,56 @@ test('isRunningViaNpx is false for a regular global install', () => {
     join(sep, 'usr', 'local', 'lib', 'node_modules', '@nanonets', 'graft', 'dist', 'cli.js'),
   ).href;
   assert.equal(isRunningViaNpx(globalPath), false);
+});
+
+// --- detectInstallManager / isRunningViaBunx: pure path heuristics ---
+//
+// Same `join(sep, …)` construction as above, for the same Windows reason: these
+// probe a normalized posix form of a platform path.
+
+test('detectInstallManager: bun global install', () => {
+  const bunGlobal = pathToFileURL(
+    join(sep, 'home', 'x', '.bun', 'install', 'global', 'node_modules', '@nanonets', 'graft', 'dist', 'cli.js'),
+  ).href;
+  assert.equal(detectInstallManager(bunGlobal), 'bun');
+});
+
+test('detectInstallManager: bunx cache is bun-owned and ephemeral', () => {
+  const bunxCache = pathToFileURL(
+    join(sep, 'home', 'x', '.bun', 'install', 'cache', '@nanonets', 'graft@0.17.0', 'dist', 'cli.js'),
+  ).href;
+  assert.equal(detectInstallManager(bunxCache), 'bun');
+  assert.equal(isRunningViaBunx(bunxCache), true);
+});
+
+test('detectInstallManager: npm global and npx caches stay npm', () => {
+  const npmGlobal = pathToFileURL(
+    join(sep, 'usr', 'local', 'lib', 'node_modules', '@nanonets', 'graft', 'dist', 'cli.js'),
+  ).href;
+  const npxCache = pathToFileURL(
+    join(sep, 'home', 'x', '.npm', '_npx', 'abc123', 'node_modules', '@nanonets', 'graft', 'dist', 'cli.js'),
+  ).href;
+  assert.equal(detectInstallManager(npmGlobal), 'npm');
+  assert.equal(detectInstallManager(npxCache), 'npm');
+  assert.equal(isRunningViaBunx(npmGlobal), false);
+});
+
+test('detectInstallManager honours a relocated BUN_INSTALL', () => {
+  const root = join(sep, 'opt', 'bun');
+  const relocated = pathToFileURL(join(root, 'install', 'global', 'node_modules', '@nanonets', 'graft', 'dist', 'cli.js')).href;
+  const before = process.env.BUN_INSTALL;
+  process.env.BUN_INSTALL = root;
+  try {
+    assert.equal(detectInstallManager(relocated), 'bun');
+  } finally {
+    if (before === undefined) delete process.env.BUN_INSTALL;
+    else process.env.BUN_INSTALL = before;
+  }
+});
+
+// --- globalInstallCommand: the single source both the runner and the printer use ---
+
+test('globalInstallCommand: one command per manager', () => {
+  assert.deepEqual(globalInstallCommand('npm'), ['npm', 'install', '-g', '@nanonets/graft']);
+  assert.deepEqual(globalInstallCommand('bun', '@nanonets/graft@latest'), ['bun', 'add', '-g', '@nanonets/graft@latest']);
 });

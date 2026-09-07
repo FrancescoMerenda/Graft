@@ -8,6 +8,7 @@
 import { runInit } from './claude/init.js';
 import { runHostsInit } from './hosts/init.js';
 import { graftCliPath } from './claude/paths.js';
+import { INSTALL_MANAGER } from './cli-meta.js';
 import {
   formatUpdateNudge,
   formatWiringRefresh,
@@ -68,7 +69,7 @@ export function runUpkeep(
   } catch { /* fail-soft: wiring refresh is never worth breaking a session for */ }
   try {
     if (opts.background !== false) maybeRefreshInBackground(opts.home);
-    const nudge = formatUpdateNudge(current, readUpdateCache(opts.home)?.latest);
+    const nudge = formatUpdateNudge(current, readUpdateCache(opts.home)?.latest, INSTALL_MANAGER);
     if (nudge) lines.push(nudge);
   } catch { /* same */ }
   return { lines };

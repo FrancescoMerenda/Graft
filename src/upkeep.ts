@@ -31,7 +31,12 @@ import { homedir } from 'node:os';
 import { readJson, writeJsonAtomic, cacheDir } from './util/state.js';
 import { HOSTS } from './hosts/registry.js';
 import { START } from './hosts/sections.js';
-import { getNpmViewVersion, readCurrentVersion } from './cli-meta.js';
+import {
+  getNpmViewVersion,
+  globalInstallCommand,
+  readCurrentVersion,
+  type InstallManager,
+} from './cli-meta.js';
 import { graftCliPath } from './claude/paths.js';
 
 /**
@@ -145,9 +150,16 @@ export function maybeRefreshInBackground(home?: string, now = Date.now()): boole
 
 /** One line, or nothing. Nothing is the common case — don't spend context on
  * "you're up to date". */
-export function formatUpdateNudge(current: string, latest: string | null | undefined): string | null {
+export function formatUpdateNudge(
+  current: string,
+  latest: string | null | undefined,
+  manager: InstallManager = 'npm',
+): string | null {
   if (!isNewer(latest, current)) return null;
-  return `⬆ graft ${current} → ${latest} available: run \`npm i -g @nanonets/graft@latest\` (restart your agent after).`;
+  // The command has to match the manager that owns the install on PATH; naming
+  // npm to someone whose graft came from `bun add -g` sends them to a no-op.
+  const install = globalInstallCommand(manager, '@nanonets/graft@latest').join(' ');
+  return `⬆ graft ${current} → ${latest} available: run \`${install}\` (restart your agent after).`;
 }
 
 /* -------------------------------------------------------------------------- */

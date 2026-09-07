@@ -1,46 +1,11 @@
 // Prints a one-line nudge after install, and records the anonymous `install`
 // event. Never fails the install.
-import { existsSync, readdirSync, copyFileSync, symlinkSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-
-/**
- * @davisvaughan/tree-sitter-r@1.3.0 has a bug in its bindings/node/index.js under Bun:
- * it looks for `prebuilds/<arch>/tree-sitter-r.node`, but prebuildify named the binary
- * `@davisvaughan+tree-sitter-r.node` due to the scoped package name.
- * Symlink (or copy) it to tree-sitter-r.node if present so the prebuild loads cleanly on all platforms.
- */
-function fixTreeSitterRPrebuilds() {
-  try {
-    const candidateDirs = [
-      join(root, 'node_modules', 'tree-sitter-r', 'prebuilds'),
-      join(root, 'node_modules', '@davisvaughan', 'tree-sitter-r', 'prebuilds'),
-    ];
-    for (const prebuildsDir of candidateDirs) {
-      if (!existsSync(prebuildsDir)) continue;
-      for (const entry of readdirSync(prebuildsDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const dir = join(prebuildsDir, entry.name);
-        const scoped = join(dir, '@davisvaughan+tree-sitter-r.node');
-        const target = join(dir, 'tree-sitter-r.node');
-        if (existsSync(scoped) && !existsSync(target)) {
-          try {
-            symlinkSync('@davisvaughan+tree-sitter-r.node', target);
-          } catch {
-            try {
-              copyFileSync(scoped, target);
-            } catch { /* ignore */ }
-          }
-        }
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-fixTreeSitterRPrebuilds();
 
 /**
  * Record the install, then hand the queue straight to a detached child.

@@ -68,6 +68,10 @@ npm install -g @nanonets/graft   # install the CLI, once
 graft init                       # build the graph + wire it into Claude Code
 ```
 
+Bun works the same way: `bun add -g @nanonets/graft`. (Use `bun add`, not
+`bun install -g .` — Bun parses a bare path as a package name and writes a
+broken entry into its global manifest.)
+
 That is the whole setup. `graft init` asks which of your coding agents to wire up, builds `graft/` from your code, and drops a statusline and hooks into `.claude/`, so from the next session on Graft rides along in Claude Code: it pulls the matching nodes into each prompt and rebuilds the graph in the background after every turn. No daemon, no re-indexing to remember, nothing to run or maintain by default — the graph is just files.
 
 Nothing is written until you pick. Run `graft init --dry-run` to see every file it would touch first, or `graft init --agents claude` to skip the prompt and wire Claude Code alone.
@@ -78,7 +82,7 @@ Nothing is written until you pick. Run `graft init --dry-run` to see every file 
 git add .claude && git commit -m "wire in graft"
 ```
 
-Prefer not to install globally? `npx @nanonets/graft init` works the same way.
+Prefer not to install globally? `npx @nanonets/graft init` (or `bunx @nanonets/graft init`) works the same way.
 
 <p align="center">
   <img src="assets/graft-terminal.png" alt="Two commands — npm install and graft init — then Graft rides along in a Claude Code session, statusline synced" width="820"/>
@@ -397,7 +401,8 @@ graft uninstall --keep-cache         # wiring only; leave graft/ and the .gitign
 graft uninstall --no-global          # leave out-of-repo files alone (~/.codex, ~/.gemini)
 
 graft version                        # print the installed + latest published npm version
-graft upgrade                        # npm install -g the latest published version
+graft upgrade                        # install the latest published version, with whichever
+                                     # manager owns the install (npm or bun)
                                      # a new version is announced automatically (checked once a day);
                                      # after upgrading, the next session refreshes this repo's wiring itself
 
@@ -582,7 +587,13 @@ bun run build
 bun test
 
 bun run cli -- build --deep .      # run the CLI from source
+
+bun add -g "file:$PWD"            # put this checkout's `graft` on PATH
 ```
+
+The global install is a symlink to the checkout, so `bun run build` is all it
+takes for a change to reach the `graft` on your PATH. `npm install -g .` and
+`bun link` both work too.
 
 ---
 
