@@ -40,6 +40,12 @@
         </select>
         <button type="button" class="echip on" id="orphanChip" title="Symbols nothing links to">orphans</button>
       </div>
+      <div class="toolrow">
+        <span class="cap">Edges</span>
+        <button type="button" class="echip on" data-layer="code" title="What the program does: calls, references, inheritance">code</button>
+        <button type="button" class="echip" data-layer="file" title="How the tree is assembled: imports, includes, containment">files</button>
+        <button type="button" class="echip" data-layer="all" title="Both at once">all</button>
+      </div>
       <div class="toolrow" id="analysisRow">
         <span class="cap">Find</span>
         <button type="button" class="echip" id="cyclesBtn" title="Strongly connected components — dependency cycles">cycles</button>

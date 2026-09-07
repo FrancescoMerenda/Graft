@@ -84,12 +84,16 @@ export class Layout {
       // Repulsion scaled by radius. A fixed strength is tuned for same-sized dots
       // and leaves rolled-up module bubbles overlapping each other, which hides the
       // very bundles between them that the grouped view exists to show.
-      .force("charge", forceManyBody<Body>().strength((b) => -220 - b.r * 16).theta(0.9))
+      .force("charge", forceManyBody<Body>().strength((b) => -420 - b.r * 34).theta(0.9))
       .force(
         "link",
         forceLink<Body, { source: Body; target: Body; distance: number }>(links)
           .distance((l) => l.distance)
-          .strength(0.5),
+          // Weak springs on purpose. At 0.5 the links win against repulsion and
+          // pull everything into one knot where no individual edge can be traced;
+          // the reason to draw a graph rather than a list is to SEE the edges, and
+          // that needs the nodes further apart than the springs would like.
+          .strength(0.18),
       )
       .force("center", forceCenter<Body>(spec.width / 2, spec.height / 2))
       // Gravity, weak but essential. `forceCenter` only translates the system as a
@@ -99,8 +103,8 @@ export class Layout {
       // cross-module reference — those escape to arbitrary distance, and a
       // "fit the graph" view then has to zoom out past the point of legibility to
       // frame a few strays. Two axis springs cost one multiply per node per tick.
-      .force("gx", forceX<Body>(spec.width / 2).strength(0.02))
-      .force("gy", forceY<Body>(spec.height / 2).strength(0.02));
+      .force("gx", forceX<Body>(spec.width / 2).strength(0.015))
+      .force("gy", forceY<Body>(spec.height / 2).strength(0.015));
     // Two passes rather than one: a single pass leaves visible overlap in the
     // dense core of a real wiring graph, which is exactly where people look.
     this.sim.force("collide", forceCollide<Body>().radius((b) => b.r + 14).iterations(2));

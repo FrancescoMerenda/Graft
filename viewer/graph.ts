@@ -26,6 +26,7 @@
  * and fades the rest of the graph.
  */
 import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colorToken, cvar } from "./data.js";
+import { groupPalette, shapeOf, shapePath, type Shape } from "./palette.js";
 import { initials } from "./detail.js";
 import { LayoutDriver } from "./sim.js";
 import type { SimSpec } from "./sim-core.js";
@@ -45,6 +46,19 @@ export interface SimNode {
   path?: string;
   /** Symbols behind a rolled-up bubble; drives its radius. */
   count?: number;
+  /** The directory this belongs to — what its colour encodes. */
+  group: string;
+  shape: Shape;
+}
+
+/** What a click on an edge reports back. */
+export interface PickedEdge {
+  source: string;
+  target: string;
+  relation: string;
+  weight?: number;
+  members?: Array<{ source: string; target: string }>;
+  moreMembers?: number;
 }
 
 interface SimEdge {
@@ -55,6 +69,8 @@ interface SimEdge {
   confidence?: string;
   /** Edges behind a rolled-up bundle; drives stroke width. */
   weight?: number;
+  members?: Array<{ source: string; target: string }>;
+  moreMembers?: number;
 }
 
 /** Initials shown on a bubble before the rest become a count. Two faces read as
@@ -81,7 +97,14 @@ const MIN_EDGE_PX = 0.35;
  * nodes get one. Selection and search always win a label regardless. */
 const LABEL_MIN_K = 0.5;
 const MAX_LABELS = 320;
+const LABEL_SIZE = 11.5;
 const LABEL_FONT = '600 11.5px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+
+/** A node whose on-screen radius reaches this wears its name on its face rather
+ * than hung underneath — and below it, the name would not fit anyway. */
+const INSIDE_LABEL_PX = 17;
+const INSIDE_LABEL_MIN = 7;
+const INSIDE_LABEL_MAX = 22;
 
 /** Arrowheads cost a fill each and are illegible when small; past this many
  * on-screen edges they are dropped except on the focused ones. */
@@ -96,8 +119,23 @@ const FENCE = 1.5;
  * the draft pass — and a small graph is where the detail actually reads. */
 const DRAFT_MIN_NODES = 1500;
 
-/** Halos are a radial gradient each — only the top handful get one. */
+/** The directory a node's colour stands for. A rolled-up bubble IS its group;
+ * a loose symbol takes the first two segments of its path, matching how the
+ * layout seeds clusters so colour and position tell the same story. */
+function groupKeyFor(n: { type: string; path?: string; sources?: string[]; id: string }): string {
+  if (n.type === "group") return n.path ?? n.id;
+  const path = n.path ?? n.sources?.[0]?.split(" · ")[0] ?? "";
+  const dirs = path.split("/").slice(0, -1);
+  return dirs.slice(0, 2).join("/") || path || "·";
+}
+
+/** Halos are a radial gradient each — only the top handful get one, and only on a
+ * graph large enough that picking the hubs out by eye is genuinely hard. */
 const MAX_GLOWS = 40;
+const GLOW_MIN_NODES = 200;
+
+/** Border between adjacent shapes, in screen pixels. */
+const BORDER_PX = 1.6;
 
 /** The minimap earns its corner only on a graph big enough to get lost in. */
 const MINIMAP_MIN_NODES = 400;
@@ -114,6 +152,8 @@ const GRID_CELL = 96;
 /** Resolved theme tokens. `cvar` is `getComputedStyle` under the hood — calling it
  * per node per frame was costing more than the drawing did. */
 interface Theme {
+  /** Directory → colour. The primary encoding: what module is this. */
+  groups: Map<string, string>;
   edge: string;
   canvas: string;
   ink: string;
@@ -137,6 +177,22 @@ function fence(sorted: Float64Array, pad: number): [number, number] {
     Math.max(sorted[0], q1 - iqr * FENCE) - pad,
     Math.min(sorted[n - 1], q3 + iqr * FENCE) + pad,
   ];
+}
+
+/**
+ * Black or white, whichever can be read on `color`.
+ *
+ * Relative luminance rather than a naive average: the eye is far more sensitive
+ * to green than to blue, so averaging the channels calls a saturated blue "light"
+ * and puts black text on it.
+ */
+function readableOn(color: string): string {
+  const m = /hsl\(\s*[\d.]+\s+[\d.]+%\s+([\d.]+)%/.exec(color);
+  if (m) return Number(m[1]) > 58 ? "#101315" : "#FFFFFF";
+  const hex = color.trim();
+  if (!hex.startsWith("#") || hex.length < 7) return "#101315";
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.58 ? "#101315" : "#FFFFFF";
 }
 
 function rgba(color: string, alpha: number): string {
@@ -168,6 +224,8 @@ export class GraphView {
   private edges: SimEdge[] = [];
   private index = new Map<string, number>();
   private theme!: Theme;
+  /** Group keys in the order their hues were assigned. */
+  private groupOrder: string[] = [];
 
   private view = { x: 0, y: 0, k: 1 };
   /** Where the camera is heading, when a move is being animated. */
@@ -207,6 +265,7 @@ export class GraphView {
    * world position. Null until one has been drawn. */
   private minimap: { x0: number; y0: number; w: number; h: number; scale: number; cx: number; cy: number } | null = null;
   private neighbors = new Set<number>();
+  private selectedEdge: SimEdge | null = null;
   private hover = -1;
   private hoverQueued = false;
   /** Nodes the reader has placed by hand. They stay put until released. */
@@ -237,6 +296,9 @@ export class GraphView {
   onSelect: (id: string | null) => void = () => {};
   /** A group bubble was clicked: the caller decides what drilling in means. */
   onDrill: (prefix: string) => void = () => {};
+  /** An edge was clicked, or the selection was cleared. Carries the real symbol
+   * pairs behind a bundle so the caller can say WHICH call relates two modules. */
+  onSelectEdge: (edge: PickedEdge | null) => void = () => {};
   /**
    * The answer to whatever question was last asked of the graph — a cycle, a
    * dependency path, a k-hop lens, the top hubs. One mechanism for all of them:
@@ -302,7 +364,11 @@ export class GraphView {
         ? 14 + Math.min(52, Math.sqrt(n.count) * 3.4)
         : 11 + Math.min(13, d * 2.6);
       radii[i] = r;
-      return { id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r, path: n.path, count: n.count };
+      return {
+        id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r,
+        path: n.path, count: n.count,
+        group: groupKeyFor(n), shape: shapeOf(n.type),
+      };
     });
 
     // Seed clustered by directory and spaced by area (see ./layouts.ts), then let
@@ -318,6 +384,12 @@ export class GraphView {
     }
 
     this.index = new Map(this.nodes.map((n, i) => [n.id, i]));
+    // Hues are handed out in size order, so the biggest modules get the most
+    // separated colours — that is where separation is worth the most.
+    this.groupOrder = [...new Set(this.nodes.map((n) => n.group))].sort((a, b) => {
+      const size = (g: string) => this.nodes.reduce((k, n) => k + (n.group === g ? 1 : 0), 0);
+      return size(b) - size(a) || a.localeCompare(b);
+    });
 
     const links: number[] = [];
     const distances: number[] = [];
@@ -326,12 +398,15 @@ export class GraphView {
       const s = this.index.get(e.source);
       const t = this.index.get(e.target);
       if (s === undefined || t === undefined) continue;
-      this.edges.push({ s, t, relation: e.relation, description: e.description, confidence: e.confidence, weight: e.weight });
+      this.edges.push({
+        s, t, relation: e.relation, description: e.description, confidence: e.confidence,
+        weight: e.weight, members: e.members, moreMembers: e.moreMembers,
+      });
       links.push(s, t);
       // Rest length measures the GAP between two bubbles, not their centres —
       // otherwise a 60-unit module and a 12-unit one sit at the same distance and
       // the big one swallows the link.
-      distances.push(REST[famOf(e.relation)] + radii[s] + radii[t]);
+      distances.push(REST[famOf(e.relation)] * 1.6 + radii[s] + radii[t]);
     }
 
     const spec: SimSpec = {
@@ -367,7 +442,9 @@ export class GraphView {
       "system", "concept", "api", "changed", "affected", "group"];
     const node: Record<string, string> = {};
     for (const t of types) node[t] = cvar(colorToken(this.tab, t));
+    const dark = getComputedStyle(document.documentElement).getPropertyValue("--canvas").trim().toLowerCase() < "#800000";
     this.theme = {
+      groups: groupPalette(this.groupOrder, dark),
       edge: cvar("--edge"),
       canvas: cvar("--canvas"),
       ink: cvar("--ink"),
@@ -405,8 +482,23 @@ export class GraphView {
 
   select(id: string | null): void {
     this.selected = id;
+    if (id !== null) this.selectedEdge = null;
     this.restyle();
     this.onSelect(id);
+  }
+
+  private selectEdge(edge: SimEdge | null): void {
+    this.selectedEdge = edge;
+    if (edge) this.selected = null;
+    this.restyle();
+    this.onSelectEdge(edge && {
+      source: this.nodes[edge.s].id,
+      target: this.nodes[edge.t].id,
+      relation: edge.relation,
+      weight: edge.weight,
+      members: edge.members,
+      moreMembers: edge.moreMembers,
+    });
   }
 
   /* ------------------------------------------------------------------ view -- */
@@ -575,6 +667,38 @@ export class GraphView {
     return best;
   }
 
+  /**
+   * The edge nearest a point, within a few pixels of it.
+   *
+   * Measured against the straight chord rather than the drawn curve: the bow is
+   * ten world units at its deepest, well inside the pick radius, and solving the
+   * quadratic for every one of fourteen thousand edges to gain that precision
+   * would cost more than the answer is worth. Hidden edges are not pickable, so
+   * what you can click is exactly what you can see.
+   */
+  private edgeAt(wx: number, wy: number): SimEdge | null {
+    const pos = this.layout.positions;
+    const reach = 6 / this.view.k;
+    let best: SimEdge | null = null;
+    let bestD = reach * reach;
+    for (const e of this.edges) {
+      if (this.hiddenTypes[this.nodes[e.s].type] || this.hiddenTypes[this.nodes[e.t].type]) continue;
+      if (this.hiddenRels[chipKey(e.relation)]) continue;
+      const ax = pos[e.s * 2], ay = pos[e.s * 2 + 1];
+      const bx = pos[e.t * 2], by = pos[e.t * 2 + 1];
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) continue;
+      // Clamped projection: the nearest point on the SEGMENT, not the infinite line.
+      const t = Math.max(0, Math.min(1, ((wx - ax) * dx + (wy - ay) * dy) / len2));
+      const ex = ax + dx * t - wx;
+      const ey = ay + dy * t - wy;
+      const d = ex * ex + ey * ey;
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
+  }
+
   private toWorld(clientX: number, clientY: number): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     return {
@@ -643,7 +767,12 @@ export class GraphView {
         // Only on a click — dragging one is arranging the map, not entering it.
         if (node.type === "group" && node.path) this.onDrill(node.path);
       } else if (pan && !moved) {
-        this.select(null);
+        // Nothing under the pointer that was a node — try the edges before
+        // treating it as a click on empty canvas.
+        const w = this.toWorld(ev.clientX, ev.clientY);
+        const edge = this.edgeAt(w.x, w.y);
+        if (edge) this.selectEdge(edge);
+        else { this.selectEdge(null); this.select(null); }
       }
       drag = null;
       pan = null;
@@ -784,9 +913,19 @@ export class GraphView {
       if (b.dash.length) ctx.setLineDash([]);
     }
     this.paintGlow(pos, k, onScreenEarly);
+    // Fill, then cut each shape out of its neighbours with a stroke in the canvas
+    // colour. Sixty-six adjacent hues touching edge to edge read as one continuous
+    // mass; a hairline of background between them is what makes them countable.
+    // Screen-width, so the separation is the same whatever the zoom.
+    const border = BORDER_PX / k;
     for (const b of geom.nodes) {
       ctx.fillStyle = rgba(b.color, b.alpha);
       ctx.fill(b.path);
+      if (b.alpha > 0.3) {
+        ctx.strokeStyle = rgba(this.theme.canvas, Math.min(1, b.alpha + 0.1));
+        ctx.lineWidth = border;
+        ctx.stroke(b.path);
+      }
     }
 
     if (geom.arrows) {
@@ -794,6 +933,7 @@ export class GraphView {
       for (const e of geom.arrows) this.arrowHead(pos, e, 1);
     }
     this.paintFocus(pos, geom.focused, k);
+    if (this.selectedEdge) this.paintPickedEdge(pos, this.selectedEdge, k);
     this.paintRings(pos, sel, k);
 
     // World-space viewport, padded by a node's worth of slack so nothing pops in.
@@ -811,7 +951,7 @@ export class GraphView {
     };
     const shown = (i: number): boolean => !this.hiddenTypes[this.nodes[i].type];
 
-    if (k >= LABEL_MIN_K || sel >= 0 || q) this.drawLabels(pos, sel, q, k, onScreen, shown);
+    this.drawLabels(pos, sel, q, k, onScreen, shown);
     if (k >= BADGE_MIN_K && this.showOwners) this.drawBadges(pos, k, onScreen, shown);
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -847,15 +987,15 @@ export class GraphView {
     for (let i = 0; i < this.nodes.length; i++) {
       const n = this.nodes[i];
       if (this.hiddenTypes[n.type]) continue;
-      let path = buckets.get(n.type);
-      if (!path) { path = new Path2D(); buckets.set(n.type, path); }
+      let path = buckets.get(n.group);
+      if (!path) { path = new Path2D(); buckets.set(n.group, path); }
       // A square, not a circle: at this size the difference is invisible and `rect`
       // costs none of the trigonometry `arc` does.
       const r = Math.max(n.r, minR);
       path.rect(pos[i * 2] - r, pos[i * 2 + 1] - r, r * 2, r * 2);
     }
-    for (const [type, path] of buckets) {
-      ctx.fillStyle = rgba(this.theme.node[type] ?? this.theme.edge, 0.9);
+    for (const [group, path] of buckets) {
+      ctx.fillStyle = rgba(this.theme.groups.get(group) ?? this.theme.edge, 0.9);
       ctx.fill(path);
     }
   }
@@ -912,6 +1052,9 @@ export class GraphView {
       if (fam === "structure") { width = 2.4; alpha = 0.32; }
       else if (fam === "dependency") { width = 1.5; alpha = 0.55; }
       else if (fam === "contract") { alpha = 0.55; }
+      // An include is scaffolding, not behaviour: long dashes, low contrast, so it
+      // never competes with a call for attention when both layers are shown.
+      else if (fam === "file") { dash = [9, 6]; width = 1.1; alpha = 0.30; }
       else { dash = [2, 5]; width = 1.2; alpha = 0.28; }
       if (e.confidence === "inferred") dash = [5, 4];
       // A bundle stands for many edges; log-scaled, because a 400-reference rope
@@ -944,6 +1087,12 @@ export class GraphView {
     };
   }
 
+  /** A node's colour: its module. Falls back to the kind palette for a graph with
+   * no paths at all (a blast export), where "which directory" means nothing. */
+  private colorOf(n: SimNode): string {
+    return this.theme.groups.get(n.group) ?? this.theme.node[n.type] ?? this.theme.edge;
+  }
+
   /** Nodes, filled per colour. Seven `fill()` calls for 26k circles. */
   private buildNodes(pos: Float32Array, sel: number, q: string, k: number): Bucket[] {
     const buckets = new Map<string, Bucket>();
@@ -957,15 +1106,15 @@ export class GraphView {
       if (sel >= 0 && i !== sel && !this.neighbors.has(i)) alpha = Math.min(alpha, 0.2);
       if (this.spotlight) alpha = this.spotlight.has(n.id) ? 0.98 : 0.07;
       const a = Math.round(alpha * 20) / 20; // quantised: keeps the bucket count tiny
-      const key = `${n.type}|${a}`;
+      // Colour by group, outline by kind — one bucket per pairing, each still a
+      // single fill however many nodes land in it.
+      const key = `${n.group}|${n.shape}|${a}`;
       let bucket = buckets.get(key);
       if (!bucket) {
-        bucket = { path: new Path2D(), color: this.theme.node[n.type] ?? this.theme.edge, alpha: a, width: 0, dash: [] };
+        bucket = { path: new Path2D(), color: this.colorOf(n), alpha: a, width: 0, dash: [] };
         buckets.set(key, bucket);
       }
-      const r = Math.max(n.r, minR);
-      bucket.path.moveTo(pos[i * 2] + r, pos[i * 2 + 1]);
-      bucket.path.arc(pos[i * 2], pos[i * 2 + 1], r, 0, Math.PI * 2);
+      shapePath(bucket.path, n.shape, pos[i * 2], pos[i * 2 + 1], Math.max(n.r, minR));
     }
     return [...buckets.values()];
   }
@@ -1044,17 +1193,20 @@ export class GraphView {
    * per node is a radial gradient per node.
    */
   private paintGlow(pos: Float32Array, k: number, onScreen: (i: number) => boolean): void {
-    if (this.hubIndices.length === 0) return;
+    // Only where finding a hub is actually hard. On a few dozen bubbles the halos
+    // overlap into a wash that erases exactly the borders the colours depend on —
+    // and with that few nodes nobody needed help spotting the big ones anyway.
+    if (this.hubIndices.length === 0 || this.nodes.length < GLOW_MIN_NODES) return;
     const ctx = this.ctx;
     for (const i of this.hubIndices) {
       if (!onScreen(i) || this.hiddenTypes[this.nodes[i].type]) continue;
       if (this.spotlight && !this.spotlight.has(this.nodes[i].id)) continue;
       const n = this.nodes[i];
       const x = pos[i * 2], y = pos[i * 2 + 1];
-      const r = Math.max(n.r, MIN_NODE_PX / k) * 2.6;
-      const g = ctx.createRadialGradient(x, y, n.r * 0.5, x, y, r);
-      const color = this.theme.node[n.type] ?? this.theme.edge;
-      g.addColorStop(0, rgba(color, 0.30));
+      const r = Math.max(n.r, MIN_NODE_PX / k) * 1.9;
+      const g = ctx.createRadialGradient(x, y, n.r * 0.8, x, y, r);
+      const color = this.colorOf(n);
+      g.addColorStop(0, rgba(color, 0.16));
       g.addColorStop(1, rgba(color, 0));
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -1076,8 +1228,21 @@ export class GraphView {
       ctx.stroke();
     };
     for (const i of this.pinned) ring(i, this.theme.out, 0.7, 3, 1.4);
-    if (sel >= 0) ring(sel, this.theme.node[this.nodes[sel].type] ?? this.theme.edge, 0.55, 5, 1.6);
+    if (sel >= 0) ring(sel, this.colorOf(this.nodes[sel]), 0.55, 5, 1.6);
     if (this.hover >= 0 && this.hover !== sel) ring(this.hover, this.theme.ink, 0.35, 4, 1.2);
+  }
+
+  /** The one edge the reader clicked, drawn over everything so the panel beside it
+   * is unambiguously about THIS rope and not its neighbour. */
+  private paintPickedEdge(pos: Float32Array, e: SimEdge, k: number): void {
+    const ctx = this.ctx;
+    const path = new Path2D();
+    this.edgePath(path, pos, e);
+    ctx.strokeStyle = this.theme.out;
+    ctx.lineWidth = Math.max(3, 3 / k);
+    ctx.stroke(path);
+    ctx.fillStyle = this.theme.out;
+    this.arrowHead(pos, e, 1.4);
   }
 
   /** Focused edges: own colour, arrowhead, and the verb spelled out. */
@@ -1172,28 +1337,55 @@ export class GraphView {
     for (let i = 0; i < this.nodes.length; i++) {
       if (!shown(i) || !onScreen(i)) continue;
       const n = this.nodes[i];
-      if (i === sel || this.neighbors.has(i) || (q && n.name.toLowerCase().includes(q))) always.push(i);
-      else if (k >= LABEL_MIN_K && !q && sel < 0) rest.push(i);
+      // A node big enough on screen to hold its own name always gets one. This is
+      // measured in PIXELS, not world units: a rolled-up module stays legible when
+      // the whole graph is zoomed out to fit, which is exactly when its name is
+      // most wanted — the old world-zoom gate blanked every label at that point.
+      if (n.r * k >= INSIDE_LABEL_PX) always.push(i);
+      else if (i === sel || this.neighbors.has(i) || (q && n.name.toLowerCase().includes(q))) always.push(i);
+      // The zoom gate exists to stop thousands of glyph runs, so it should not
+      // apply when there are only dozens: a rolled-up view of sixty-six modules
+      // can name every one of them for less than a millisecond.
+      else if ((k >= LABEL_MIN_K || this.nodes.length <= MAX_LABELS) && !q && sel < 0) rest.push(i);
     }
     if (rest.length > MAX_LABELS) {
       rest.sort((a, b) => this.nodes[b].deg - this.nodes[a].deg);
       rest.length = MAX_LABELS;
     }
+    if (always.length > MAX_LABELS) always.sort((a, b) => this.nodes[b].r - this.nodes[a].r);
     const draw = always.length > MAX_LABELS ? always.slice(0, MAX_LABELS) : always.concat(rest);
     if (draw.length === 0) return;
 
-    ctx.font = LABEL_FONT;
     ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
     ctx.lineWidth = 3 / k;
     ctx.strokeStyle = this.theme.canvas;
-    ctx.fillStyle = this.theme.ink;
     for (const i of draw) {
       const n = this.nodes[i];
       const x = pos[i * 2];
-      const y = pos[i * 2 + 1] + n.r + 15;
-      ctx.strokeText(n.name, x, y);
-      ctx.fillText(n.name, x, y);
+      // A name inside the thing it names, when the thing is big enough to hold it.
+      // A bubble worth 1,200 symbols is a place on the map, and a place wears its
+      // label on its face; only a dot too small to write on needs one hung beneath.
+      const inside = n.r * this.view.k >= INSIDE_LABEL_PX;
+      if (inside) {
+        // Shrink to fit the widest chord the shape allows, floored so a long name
+        // never becomes unreadable — it is clipped by its own bubble instead.
+        ctx.font = LABEL_FONT;
+        const fit = (n.r * 1.55) / Math.max(1, ctx.measureText(n.name).width);
+        const size = Math.max(INSIDE_LABEL_MIN, Math.min(INSIDE_LABEL_MAX, LABEL_SIZE * fit));
+        ctx.font = LABEL_FONT.replace(`${LABEL_SIZE}px`, `${size.toFixed(1)}px`);
+        ctx.textBaseline = "middle";
+        // Contrast against THIS bubble, not against the page. Sixty-six hues span
+        // light and dark, and one fixed ink colour is unreadable on half of them.
+        ctx.fillStyle = readableOn(this.colorOf(n));
+        ctx.fillText(n.name, x, pos[i * 2 + 1]);
+      } else {
+        ctx.font = LABEL_FONT;
+        ctx.textBaseline = "alphabetic";
+        const y = pos[i * 2 + 1] + n.r + 15;
+        ctx.strokeText(n.name, x, y);
+        ctx.fillStyle = this.theme.ink;
+        ctx.fillText(n.name, x, y);
+      }
     }
   }
 

@@ -35,6 +35,16 @@ export interface VizEdge {
   confidence?: "extracted" | "inferred";
   /** Edges behind a rolled-up bundle; drives stroke width when grouped. */
   weight?: number;
+  /**
+   * The actual symbol pairs this bundle stands for, capped.
+   *
+   * "elmMcl uses elmSip" is where most tools stop, and it is the least useful half
+   * of the fact. What a reader needs next is WHICH call — the one line to open, or
+   * the one dependency to break. Kept as ids so the panel can name and link them.
+   */
+  members?: Array<{ source: string; target: string }>;
+  /** Members beyond the cap, so a truncated list says so rather than lying. */
+  moreMembers?: number;
 }
 
 export interface EvidenceLine {
@@ -67,27 +77,56 @@ export interface VizGraph {
 }
 
 /** Every relation verb belongs to one family; form follows family. */
-export type Family = "structure" | "dependency" | "contract" | "association";
+export type Family = "structure" | "dependency" | "contract" | "association" | "file";
 
 const FAMILY: Record<string, Family> = {
   part_of: "structure", contains: "structure",
-  uses: "dependency", depends_on: "dependency", calls: "dependency", imports: "dependency",
+  uses: "dependency", depends_on: "dependency", calls: "dependency",
   produces: "dependency", configures: "dependency", validates: "dependency",
   extends: "contract", implements: "contract",
   references: "association",
+  // Its own family, not a dependency. A C `#include` is a preprocessor fact about
+  // two FILES; a call is a fact about two SYMBOLS. Drawing them with one grammar
+  // said the header "uses" the thing that included it, which is not a claim
+  // anybody would make in words.
+  imports: "file",
 };
+
+/**
+ * Which layer a relation belongs to.
+ *
+ * `file` edges describe how the tree is assembled — includes, containment. `code`
+ * edges describe what the program does at runtime. Mixing them buries 13,591 call
+ * edges under a wall of `#include` lines that answer a different question, so the
+ * viewer lets you look at one at a time.
+ */
+export type Layer = "code" | "file";
+
+export function layerOf(rel: string): Layer {
+  const fam = famOf(rel);
+  return fam === "file" || fam === "structure" ? "file" : "code";
+}
 
 export function famOf(rel: string): Family {
   return FAMILY[rel] ?? "association";
 }
 
 /** Force-spring rest length per family: hierarchy pulls tight. */
-export const REST: Record<Family, number> = { structure: 85, dependency: 145, contract: 150, association: 185 };
+export const REST: Record<Family, number> = {
+  structure: 85, dependency: 145, contract: 150, association: 185,
+  // Includes are the loosest tie there is — a header pulled in by forty files
+  // should not drag all forty into a knot around it.
+  file: 210,
+};
 
 /** Chip grouping: "part of" and "uses" are clear as groups; other verbs stand alone. */
 export function chipKey(rel: string): string {
   if (famOf(rel) === "structure") return "part of";
-  if (rel === "calls" || rel === "uses" || rel === "depends_on" || rel === "imports") return "uses";
+  // `imports` deliberately NOT folded in here: it is the one verb in this list
+  // that is not about symbols, and hiding it inside "uses" is what made a call
+  // graph and an include graph look like the same picture.
+  if (rel === "imports") return "includes";
+  if (rel === "calls" || rel === "uses" || rel === "depends_on") return "uses";
   return rel.replace(/_/g, " ");
 }
 
@@ -101,6 +140,7 @@ export const CHIP_HINT: Record<string, string> = {
   "extends": "what contract must this honor? (inheritance)",
   "implements": "what contract must this honor? (interface)",
   "references": "mentioned but never called — possible dead coupling",
+  "includes": "which file pulls in which — a preprocessor fact, not a call",
 };
 
 /** Node-type → CSS custom property, per tab. */

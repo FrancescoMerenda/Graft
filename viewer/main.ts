@@ -2,7 +2,8 @@
  * graft viz — viewer entry point. Wires tabs, chips, legend, search, theme,
  * SSE live reload, and the three views (Context graph / Code graph / Outline).
  */
-import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, colorToken, cvar, famOf, type VizGraph } from "./data.js";
+import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, cvar, famOf, layerOf, type VizGraph, type Layer } from "./data.js";
+import { shapeOf, shapeSvg } from "./palette.js";
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
@@ -34,6 +35,9 @@ const tools = {
   scope: undefined as string | undefined,
   hideOrphans: false,
   layout: "force" as LayoutMode,
+  /** Which kind of relation is on screen: what the code does, or how the tree is
+   * assembled. See `setLayer`. */
+  layer: "code" as Layer | "all",
   shown: null as VizGraph | null,
   adjacency: null as Adjacency | null,
   /** Set when `path` is waiting for its second endpoint. */
@@ -111,11 +115,15 @@ function renderLegend(): void {
   if (!graph) return;
   const counts = new Map<string, number>();
   for (const n of graph.nodes) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
+  // Shape, not colour. Colour is spent on which module a node belongs to — the
+  // question that actually organises the picture — so kind is carried by outline
+  // and the legend has to show the outline rather than a swatch.
+  const ink = cvar("--ink");
   for (const [type, count] of counts) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "lchip" + (view.hiddenTypes[type] ? " off" : "");
-    chip.innerHTML = `<span class="sw" style="background:${cvar(colorToken(graphTab(), type))}"></span>${type} <span style="color:var(--muted);font-weight:500">${count}</span>`;
+    chip.innerHTML = `${shapeSvg(shapeOf(type), ink)}${type} <span style="color:var(--muted);font-weight:500">${count}</span>`;
     chip.addEventListener("click", () => {
       view.hiddenTypes[type] = !view.hiddenTypes[type];
       renderLegend();
@@ -128,6 +136,11 @@ function renderLegend(): void {
   // A decoration toggle, not a type filter: it sits after the type chips, carries
   // its own class, and deliberately does NOT feed `updateShownCount` — hiding a
   // face hides no node.
+  const hint = document.createElement("span");
+  hint.className = "lhint";
+  hint.textContent = tools.depth > 0 ? "colour = module" : "colour = directory";
+  host.appendChild(hint);
+
   const graphHasOwners = graph.nodes.some((n) => n.owners?.length);
   if (graphHasOwners) {
     const chip = document.createElement("button");
@@ -181,6 +194,53 @@ function showDetail(id: string | null): void {
 }
 
 view.onSelect = (id) => { if (!maybeCompletePath(id)) showDetail(id); };
+
+/**
+ * What actually makes two things relate.
+ *
+ * A bundle between two modules used to say only "these are connected", which is
+ * the least useful half of the fact — the reader's next question is always
+ * *which* call, so they know the one line to open or the one dependency to break.
+ * The grouping keeps the real symbol pairs on the bundle; this renders them,
+ * resolved back to names through the ungrouped graph, and clicking one jumps to
+ * that symbol.
+ */
+view.onSelectEdge = (edge) => {
+  const host = $("detail");
+  if (!edge) { showDetail(view.selected); return; }
+  const shown = activeGraph();
+  const raw = rawGraph();
+  const nameIn = (g: VizGraph | null, id: string): string =>
+    g?.nodes.find((n) => n.id === id)?.name ?? id.split("#").pop() ?? id;
+  const endpoint = (id: string): string => escapeText(nameIn(shown, id));
+  const verb = escapeText(edge.relation.replace(/_/g, " "));
+
+  const rows = (edge.members ?? []).map((m) => {
+    const path = raw?.nodes.find((n) => n.id === m.source)?.path ?? "";
+    return `<li><button class="linkbtn" data-goto="${escapeText(m.source)}">${escapeText(nameIn(raw, m.source))}</button>`
+      + ` <span class="verb">${verb}</span> `
+      + `<button class="linkbtn" data-goto="${escapeText(m.target)}">${escapeText(nameIn(raw, m.target))}</button>`
+      + (path ? `<div class="where">${escapeText(path)}</div>` : "")
+      + `</li>`;
+  });
+
+  host.innerHTML =
+    `<div class="edgehead"><b>${endpoint(edge.source)}</b> <span class="verb">${verb}</span> <b>${endpoint(edge.target)}</b></div>`
+    + (edge.weight && edge.weight > 1 ? `<div class="edgesub">${edge.weight} references</div>` : "")
+    + (rows.length
+      ? `<ul class="edgelist">${rows.join("")}</ul>`
+        + (edge.moreMembers ? `<div class="edgesub">and ${edge.moreMembers} more</div>` : "")
+      : `<div class="edgesub">A single reference.</div>`);
+
+  for (const b of host.querySelectorAll<HTMLButtonElement>("[data-goto]")) {
+    b.addEventListener("click", () => {
+      const id = b.dataset.goto!;
+      // The symbol lives in the ungrouped graph; drop the grouping to reach it.
+      if (!shown?.nodes.some((n) => n.id === id)) { tools.depth = 0; applyTools(); }
+      view.focus(id);
+    });
+  }
+};
 
 /* ---------- tabs ---------- */
 function setTab(tab: Tab): void {
@@ -368,6 +428,7 @@ function applyTools(): void {
 
   renderGroupOptions(raw);
   renderCrumbs();
+  setLayer(tools.layer);
   renderChips();
   renderLegend();
   updateShownCount();
@@ -454,6 +515,37 @@ $("orphanChip").addEventListener("click", () => {
   tools.hideOrphans = !tools.hideOrphans;
   applyTools();
 });
+
+/**
+ * Code edges and file edges answer different questions, so you look at one at a
+ * time.
+ *
+ * `imports` — a TypeScript import, a Rust `use`, a C `#include` — relates two
+ * FILES. `calls` relates two SYMBOLS. Folded together, 13,591 call edges sat
+ * under a wall of include lines and neither could be read. Nothing here is
+ * language-specific: it keys on the relation graft already emits.
+ */
+function setLayer(layer: Layer | "all"): void {
+  const graph = activeGraph();
+  if (!graph) return;
+  tools.layer = layer;
+  view.hiddenRels = {};
+  if (layer !== "all") {
+    for (const e of graph.edges) {
+      if (layerOf(e.relation) !== layer) view.hiddenRels[chipKey(e.relation)] = true;
+    }
+  }
+  for (const b of document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
+    b.className = "echip" + (b.dataset.layer === layer ? " on" : "");
+  }
+  renderChips();
+  view.restyle();
+  updateShownCount();
+}
+
+for (const b of document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
+  b.addEventListener("click", () => setLayer(b.dataset.layer as Layer | "all"));
+}
 
 $("cyclesBtn").addEventListener("click", () => {
   if (!tools.adjacency) return;
