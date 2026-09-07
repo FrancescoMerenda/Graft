@@ -13,7 +13,7 @@
  * so the renderer and the driver treat all three identically.
  */
 import type { VizGraph, VizNode } from "./data.js";
-import { pathOf } from "./aggregate.js";
+import { pathOf, significantDirs } from "./aggregate.js";
 
 export type LayoutMode = "force" | "radial" | "layered";
 
@@ -61,8 +61,7 @@ function sunflower(i: number, count: number, R: number): [number, number] {
  * joins its directory. */
 function clusterKeyOf(node: VizNode): string {
   if (node.type === "group") return node.path ?? node.id;
-  const dirs = pathOf(node).split("/").slice(0, -1);
-  return dirs.slice(0, SEED_DEPTH).join("/") || "·";
+  return significantDirs(pathOf(node)).slice(0, SEED_DEPTH).join("/") || "·";
 }
 
 /**
@@ -129,8 +128,7 @@ export function seedPositions(nodes: VizNode[], radii: Float32Array, width: numb
 export function radialLayout(nodes: VizNode[], depth = 2): Float32Array {
   const groups = new Map<string, VizNode[]>();
   for (const n of nodes) {
-    const dirs = pathOf(n).split("/").slice(0, -1);
-    const key = dirs.slice(0, depth).join("/") || "·";
+    const key = significantDirs(pathOf(n)).slice(0, depth).join("/") || "·";
     const g = groups.get(key);
     if (g) g.push(n);
     else groups.set(key, [n]);

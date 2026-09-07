@@ -27,6 +27,7 @@
  */
 import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colorToken, cvar } from "./data.js";
 import { groupPalette, shapeOf, shapePath, type Shape } from "./palette.js";
+import { significantDirs } from "./aggregate.js";
 import { initials } from "./detail.js";
 import { LayoutDriver } from "./sim.js";
 import type { SimSpec } from "./sim-core.js";
@@ -125,8 +126,7 @@ const DRAFT_MIN_NODES = 1500;
 function groupKeyFor(n: { type: string; path?: string; sources?: string[]; id: string }): string {
   if (n.type === "group") return n.path ?? n.id;
   const path = n.path ?? n.sources?.[0]?.split(" · ")[0] ?? "";
-  const dirs = path.split("/").slice(0, -1);
-  return dirs.slice(0, 2).join("/") || path || "·";
+  return significantDirs(path).slice(0, 2).join("/") || path || "·";
 }
 
 /** Halos are a radial gradient each — only the top handful get one, and only on a

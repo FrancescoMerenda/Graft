@@ -195,6 +195,12 @@ export function resolveEdges(
   const out: EdgeV1[] = [];
   const seen = new Set<string>();
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"]) => {
+    // A symbol never relates to itself. Bare-name resolution can land one on its
+    // own definition — `enchantum::array : std::array` resolves `array` to the
+    // very class that declared it — and a self-loop is not a weaker answer than
+    // the right one, it is a wrong one: nothing extends, calls or imports itself,
+    // and drawn it becomes a node with a loop where a real dependency should be.
+    if (source === target) return;
     const key = `${source}\0${relation}\0${target}`;
     if (seen.has(key)) return;
     seen.add(key);

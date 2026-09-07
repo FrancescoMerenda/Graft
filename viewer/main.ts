@@ -7,7 +7,7 @@ import { shapeOf, shapeSvg } from "./palette.js";
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
-import { groupGraph, availableDepths } from "./aggregate.js";
+import { groupGraph, availableDepths, pathOf, significantDirs } from "./aggregate.js";
 import { staticLayout, type LayoutMode } from "./layouts.js";
 import { buildAdjacency, shortestPath, neighborhood, findCycles, hubs, type Adjacency } from "./analysis.js";
 
@@ -287,9 +287,8 @@ function setTab(tab: Tab): void {
       tools.scope = undefined;
       tools.pathFrom = null;
       view.spotlight = null;
-      const big = graph.nodes.length > AUTO_GROUP_NODES;
-      tools.depth = big ? Math.min(2, availableDepths(graph).length) : 0;
-      tools.hideOrphans = big;
+      tools.hideOrphans = graph.nodes.length > AUTO_GROUP_NODES;
+      tools.depth = depthFor(undefined);
       applyTools();
     }
   }
@@ -467,7 +466,7 @@ function renderCrumbs(): void {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
-    b.addEventListener("click", () => { tools.scope = target; applyTools(); });
+    b.addEventListener("click", () => goTo(target));
     host.appendChild(b);
   };
   add("all", undefined);
@@ -495,13 +494,44 @@ function setSpotlight(ids: Set<string> | null, message: string | null): void {
   $("clearBtn").hidden = ids === null;
 }
 
-// Clicking a bubble means "go in there": scope to that directory and re-group one
-// level deeper, which is the same gesture as opening a folder.
-view.onDrill = (prefix) => {
-  tools.scope = prefix;
-  tools.depth = prefix.split("/").length + 1;
+/**
+ * The grouping depth that makes sense inside a given scope.
+ *
+ * Depth counts significant directory segments from the REPO ROOT, not from the
+ * scope, so drilling could not just add one and hope: inside `CMU_LIBS/elmMcl`,
+ * whose files live in `headers/` and `sources/` — both ignored as file-type
+ * conventions — every path still has exactly two significant segments, so any
+ * depth at all rolled the whole module into a single bubble containing everything
+ * and no edges. Which is what "1 groups · 0 bundles" was.
+ *
+ * So: one level deeper when there IS a level deeper, and the symbols themselves
+ * when there is not. Opening a folder should always show you its contents.
+ */
+function depthFor(scope: string | undefined): number {
+  const raw = rawGraph();
+  if (!raw) return 0;
+  if (!scope) return raw.nodes.length > AUTO_GROUP_NODES ? Math.min(2, availableDepths(raw).length) : 0;
+  const base = scope.split("/").length;
+  const deeper = raw.nodes.some((n) => {
+    const p = pathOf(n);
+    if (p !== scope && !p.startsWith(`${scope}/`)) return false;
+    return significantDirs(p).length > base;
+  });
+  return deeper ? base + 1 : 0;
+}
+
+/** Move to a scope and pick the depth that shows its contents. */
+function goTo(scope: string | undefined): void {
+  tools.scope = scope;
+  tools.depth = depthFor(scope);
+  tools.pathFrom = null;
+  view.spotlight = null;
+  showFinding(null);
   applyTools();
-};
+}
+
+// Clicking a bubble means "go in there", the same gesture as opening a folder.
+view.onDrill = (prefix) => goTo(prefix);
 
 ($("groupSel") as HTMLSelectElement).addEventListener("change", (ev) => {
   tools.depth = Number((ev.target as HTMLSelectElement).value);
@@ -614,6 +644,9 @@ async function loadAll(): Promise<void> {
   // The subtitle only exists on an exported page (`graft viz --export --title`),
   // where the same file is published per pull request and the reader needs to know
   // WHICH one they opened.
+  // The code graph is assembled from wiring.json, which carries no repo name — but
+  // the repo-root group is named from it, so carry it across.
+  if (code) code.meta.repoName = context.meta.repoName;
   const where = [context.meta.repoName, context.meta.subtitle].filter(Boolean).join(" · ");
   $("repoName").textContent = where;
   document.title = `graft viz — ${where}`;

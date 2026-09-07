@@ -394,6 +394,7 @@ function tagsExtract(
   const defNameAt = new Set<number>();
   const calls: Array<{ name: string; at: number }> = [];
   const refs: Array<{ name: string; at: number }> = [];
+  const supers: Array<{ name: string; at: number }> = [];
   for (const m of matches) {
     const cap: Record<string, TsNode> = {};
     for (const c of m.captures) cap[c.name] = c.node;
@@ -414,6 +415,13 @@ function tagsExtract(
     if (("reference.class" in cap || "reference.interface" in cap ||
          "reference.implementation" in cap || "reference.module" in cap) && cap.name)
       refs.push({ name: cap.name.text, at: cap.name.startIndex });
+    // A supertype is not merely "named": it is the strongest coupling a class can
+    // have, and flattening it into `references` alongside every incidental mention
+    // threw away the one relation an object-oriented codebase is most read for.
+    // Any grammar can opt in by capturing @reference.extends; those that don't keep
+    // their existing behaviour.
+    if ("reference.extends" in cap && cap.name)
+      supers.push({ name: cap.name.text, at: cap.name.startIndex });
   }
   // innermost enclosing definition of a token at byte offset `at`
   const enclosing = (at: number) =>
@@ -424,6 +432,12 @@ function tagsExtract(
     if (defNameAt.has(c.at)) continue;
     const enc = enclosing(c.at);
     rawEdges.push({ source: enc ? enc.id : rel, relation: "calls", file: rel, name: c.name });
+  }
+  for (const sup of supers) {
+    if (defNameAt.has(sup.at)) continue;
+    const enc = enclosing(sup.at);
+    if (!enc) continue; // a supertype outside any class has no sound source
+    rawEdges.push({ source: enc.id, relation: "extends", file: rel, name: sup.name });
   }
   for (const r of refs) {
     if (defNameAt.has(r.at)) continue;

@@ -35,7 +35,40 @@ export function pathOf(node: VizNode): string {
 }
 
 /**
- * The group a path belongs to: its first `depth` directory segments.
+ * Directory names that describe a FILE TYPE rather than a component.
+ *
+ * `CMU_LIBS/elmMcl/headers` and `CMU_LIBS/elmMcl/sources` are one module split by
+ * language convention, not two modules — grouping by them halves every module and
+ * puts its declarations in a different bubble from its definitions. Worse, every
+ * submodule has both, so the top level of a C++ tree ends up with bubbles called
+ * `headers` and `sources` that mean nothing at all.
+ *
+ * Recognised rather than inferred. A frequency heuristic ("a name under many
+ * parents is a convention") gets this right on a repo with fifty submodules and
+ * badly wrong on one with three, and a viewer that regroups differently depending
+ * on repo size is worse than one that is occasionally too literal.
+ */
+const FILE_TYPE_DIRS = new Set([
+  "src", "source", "sources", "lib",
+  "include", "includes", "inc", "header", "headers",
+  "impl", "internal", "private", "public", "detail",
+]);
+
+/**
+ * Path segments that carry identity: the ones worth grouping by.
+ *
+ * A file whose every directory is a convention — `sources/main.cpp`, `src/app.ts`
+ * — belongs to no module but the repo itself, and says so by returning nothing.
+ * The earlier version fell back to the conventions in that case, which put
+ * `sources` and `headers` bubbles at the top level of a C++ tree: precisely the
+ * meaningless grouping this exists to prevent.
+ */
+export function significantDirs(path: string): string[] {
+  return path.split("/").slice(0, -1).filter((d) => !FILE_TYPE_DIRS.has(d.toLowerCase()));
+}
+
+/**
+ * The group a path belongs to: its first `depth` MEANINGFUL directory segments.
  *
  * The filename is never part of the key — group by it and every file is its own
  * group, which is not aggregation. A path with no directory at all is its own
@@ -43,18 +76,18 @@ export function pathOf(node: VizNode): string {
  * stays visible instead of disappearing into a bubble named after the repo.
  */
 export function groupKeyOf(path: string, depth: number): string {
-  const parts = path.split("/");
-  const dirs = parts.slice(0, -1);
-  if (dirs.length === 0) return parts[parts.length - 1] ?? "";
-  return dirs.slice(0, depth).join("/");
+  return significantDirs(path).slice(0, depth).join("/");
 }
+
+/** The group key for files that belong to no module — the repo's own code. */
+export const ROOT_GROUP = "";
 
 /** The directory depths this graph can meaningfully be grouped at, shallowest
  * first — so the UI offers the levels a repo actually has rather than a guess. */
 export function availableDepths(graph: VizGraph): number[] {
   let max = 0;
   for (const n of graph.nodes) {
-    const dirs = pathOf(n).split("/").length - 1;
+    const dirs = significantDirs(pathOf(n)).length;
     if (dirs > max) max = dirs;
   }
   return Array.from({ length: Math.min(max, 4) }, (_, i) => i + 1);
@@ -167,7 +200,10 @@ export function groupGraph(graph: VizGraph, opts: GroupOptions): VizGraph {
     }
   }
 
-  const label = labelsFor([...groups.keys()]);
+  const label = labelsFor([...groups.keys()].filter((k) => k !== ROOT_GROUP));
+  // The repo's own top-level code is one thing, named after the repo rather than
+  // after whichever convention directory it happens to sit in.
+  label.set(ROOT_GROUP, graph.meta.repoName ?? "root");
   const groupNodes: VizNode[] = [...groups.values()].map((g) => ({
     id: `group:${g.key}`,
     name: label.get(g.key) ?? g.key,

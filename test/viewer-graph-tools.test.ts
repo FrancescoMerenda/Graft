@@ -48,9 +48,9 @@ test("groupKeyOf groups by directory, never by filename", () => {
   assert.equal(groupKeyOf("libs/mcl/a.cpp", 2), "libs/mcl");
   // Deeper than the path goes: the whole directory part, not an empty key.
   assert.equal(groupKeyOf("libs/mcl/a.cpp", 9), "libs/mcl");
-  // A top-level file has no directory, so it stands alone rather than vanishing
-  // into a bubble named after the repo root.
-  assert.equal(groupKeyOf("main.cpp", 1), "main.cpp");
+  // A file at the repo root belongs to the repo, not to itself — otherwise every
+  // loose top-level file becomes its own bubble.
+  assert.equal(groupKeyOf("main.cpp", 1), "");
 });
 
 test("pathOf prefers the explicit path and falls back to the sources string", () => {
@@ -68,7 +68,7 @@ test("availableDepths offers only the levels the tree actually has", () => {
 test("groupGraph rolls symbols into directory bubbles and bundles the edges", () => {
   const g = groupGraph(GRAPH, { depth: 2 });
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
-  assert.deepEqual([...byId.keys()].sort(), ["group:libs/mcl", "group:libs/sip", "group:main.cpp"]);
+  assert.deepEqual([...byId.keys()].sort(), ["group:", "group:libs/mcl", "group:libs/sip"]);
 
   // Bubble size is the symbol count behind it.
   assert.equal(byId.get("group:libs/mcl")?.count, 4);
@@ -269,4 +269,55 @@ test("seedPositions spreads a big graph further than a small one", async () => {
   };
   // Area-based sizing: 400 nodes need meaningfully more room than 40.
   assert.ok(extent(make(400)) > extent(make(40)) * 2, "the seed disc grows with what goes in it");
+});
+
+test("groupKeyOf ignores directories that name a file type, not a component", () => {
+  // A module split into headers/ and sources/ is one module. Grouping by those
+  // puts a class's declarations in a different bubble from its definitions, and
+  // fills the top level of a C++ tree with bubbles called `headers` and `sources`.
+  assert.equal(groupKeyOf("CMU_LIBS/elmMcl/headers/a.h", 2), "CMU_LIBS/elmMcl");
+  assert.equal(groupKeyOf("CMU_LIBS/elmMcl/sources/a.cpp", 2), "CMU_LIBS/elmMcl");
+  assert.equal(groupKeyOf("src/graph/extract.ts", 1), "graph");
+  // A file whose every directory is a convention belongs to no module — it is the
+  // repo's own code, and gets the root group rather than a bubble called `src`.
+  assert.equal(groupKeyOf("src/main.ts", 1), "");
+  assert.equal(groupKeyOf("sources/main.cpp", 2), "");
+});
+
+test("headers and sources land in the same group, and stop being groups themselves", () => {
+  const g = groupGraph(
+    {
+      meta: { nodeCount: 0, edgeCount: 0 },
+      nodes: [
+        node("libs/mcl/headers/a.h#Decl", "libs/mcl/headers/a.h"),
+        node("libs/mcl/sources/a.cpp#Def", "libs/mcl/sources/a.cpp"),
+        node("libs/sip/include/s.h#Other", "libs/sip/include/s.h"),
+      ],
+      edges: [],
+    },
+    { depth: 2 },
+  );
+  const ids = g.nodes.map((n) => n.id).sort();
+  assert.deepEqual(ids, ["group:libs/mcl", "group:libs/sip"]);
+  assert.equal(g.nodes.find((n) => n.id === "group:libs/mcl")?.count, 2, "both halves of the module");
+});
+
+test("top-level convention directories become one repo-root group, named for the repo", () => {
+  const g = groupGraph(
+    {
+      meta: { nodeCount: 0, edgeCount: 0, repoName: "CMU" },
+      nodes: [
+        node("headers/a.h#A", "headers/a.h"),
+        node("sources/a.cpp#B", "sources/a.cpp"),
+        node("CMU_LIBS/elmMcl/sources/m.cpp#C", "CMU_LIBS/elmMcl/sources/m.cpp"),
+      ],
+      edges: [],
+    },
+    { depth: 2 },
+  );
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  // No `headers` or `sources` bubble: both are the repo's own code.
+  assert.deepEqual([...byId.keys()].sort(), ["group:", "group:CMU_LIBS/elmMcl"]);
+  assert.equal(byId.get("group:")?.name, "CMU", "the root group is named after the repo");
+  assert.equal(byId.get("group:")?.count, 2);
 });
