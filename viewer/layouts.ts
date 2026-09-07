@@ -15,7 +15,7 @@
 import type { VizGraph, VizNode } from "./data.js";
 import { pathOf, significantDirs } from "./aggregate.js";
 
-export type LayoutMode = "force" | "radial" | "layered";
+export type LayoutMode = "tree" | "force" | "radial" | "layered";
 
 /** Comfortable spacing in world units; the view fits itself to whatever comes out. */
 const LAYER_GAP = 220;
@@ -37,6 +37,9 @@ const OUTER_FILL = 0.5;
  * the aggregation view defaults to, so a seeded graph and a grouped one put the
  * same things in the same place. */
 const SEED_DEPTH = 2;
+
+/** Gap between neighbours on a ring, and between rings, in world units. */
+const RING_PAD = 26;
 
 /** The golden angle. Successive points at this angle never line up into spokes,
  * which is what makes a sunflower spiral look evenly filled at any count. */
@@ -65,6 +68,143 @@ function clusterKeyOf(node: VizNode): string {
 }
 
 /**
+ * File names that conventionally hold a program's entry point.
+ *
+ * Language-general by listing conventions rather than by knowing languages: a
+ * repo whose entry point is called something else simply falls through to the
+ * degree heuristic below, which is the same answer this would have given anyway.
+ */
+const ENTRY_FILES = [
+  /^main\.[a-z]+$/, /^index\.[a-z]+$/, /^app\.[a-z]+$/, /^cli\.[a-z]+$/,
+  /^__main__\.py$/, /^program\.cs$/, /^lib\.rs$/, /^mod\.rs$/, /^server\.[a-z]+$/,
+];
+
+/**
+ * The node the picture should be built around.
+ *
+ * A graph laid out from nowhere in particular reads as an explosion; laid out
+ * from its entry point it reads as a program. Three rules, in order:
+ *
+ *  1. A rolled-up view has no `main.cpp` to find — its nodes are directories — so
+ *     the repo's own root group wins, which is exactly where an entry point lives.
+ *  2. Otherwise, a file named by convention, shallowest first: a `main.c` at the
+ *     top of the tree outranks one inside a vendored dependency.
+ *  3. Otherwise, whatever depends on the most things. Not the most connected —
+ *     the most OUTGOING — because a utility everything calls is the bottom of the
+ *     graph, and the root of a program is at the top.
+ */
+export function findRoot(graph: VizGraph): string | null {
+  if (graph.nodes.length === 0) return null;
+  const out = new Map<string, number>();
+  for (const e of graph.edges) out.set(e.source, (out.get(e.source) ?? 0) + 1);
+
+  const groups = graph.nodes.filter((n) => n.type === "group");
+  if (groups.length > 0) {
+    const root = groups.find((n) => n.path === "");
+    if (root) return root.id;
+    return groups.reduce((best, n) => ((out.get(n.id) ?? 0) > (out.get(best.id) ?? 0) ? n : best)).id;
+  }
+
+  const entries = graph.nodes
+    .filter((n) => ENTRY_FILES.some((re) => re.test((pathOf(n).split("/").pop() ?? "").toLowerCase())))
+    .sort((a, b) => pathOf(a).split("/").length - pathOf(b).split("/").length);
+  if (entries.length > 0) return entries[0].id;
+
+  let best: string | null = null;
+  for (const n of graph.nodes) {
+    if (best === null || (out.get(n.id) ?? 0) > (out.get(best) ?? 0)) best = n.id;
+  }
+  return (out.get(best ?? "") ?? 0) > 0 ? best : null;
+}
+
+/**
+ * Concentric rings by dependency depth, rooted at the entry point.
+ *
+ * Ring 0 is the root; ring N is everything first reached in N steps. Each node is
+ * placed near the angle of whatever reached it, so a subtree stays a wedge rather
+ * than being scattered around the circle, and edges run outward instead of
+ * crossing the middle. Rings are sized from what they must hold, so a wide layer
+ * gets a wide ring instead of a crowded one.
+ *
+ * Direction matters: the walk follows outgoing edges first, so distance from the
+ * centre means "how far below the entry point", not merely "how far away".
+ * Anything the entry point cannot reach is walked undirected afterwards, and
+ * whatever is still unreached — half a wiring graph, typically — rings the
+ * outside, clustered by directory so it is at least ordered.
+ */
+export function radialTreeSeed(
+  graph: VizGraph, radii: Float32Array, width: number, height: number, rootId: string,
+): Float32Array | null {
+  const index = new Map(graph.nodes.map((n, i) => [n.id, i]));
+  const root = index.get(rootId);
+  if (root === undefined) return null;
+
+  const out: number[][] = graph.nodes.map(() => []);
+  const both: number[][] = graph.nodes.map(() => []);
+  for (const e of graph.edges) {
+    const a = index.get(e.source);
+    const b = index.get(e.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    out[a].push(b);
+    both[a].push(b);
+    both[b].push(a);
+  }
+
+  const depth = new Int32Array(graph.nodes.length).fill(-1);
+  const layers: number[][] = [[root]];
+  depth[root] = 0;
+  const walk = (adjacency: number[][]): void => {
+    for (let d = 0; d < layers.length; d++) {
+      const next: number[] = [];
+      for (const n of layers[d]) {
+        for (const m of adjacency[n]) {
+          if (depth[m] !== -1) continue;
+          depth[m] = d + 1;
+          next.push(m);
+        }
+      }
+      if (next.length === 0) continue;
+      if (layers[d + 1]) layers[d + 1].push(...next);
+      else layers[d + 1] = next;
+    }
+  };
+  walk(out);   // dependency depth first…
+  walk(both);  // …then anything only reachable the other way round
+
+  const unreached = [];
+  for (let i = 0; i < graph.nodes.length; i++) if (depth[i] === -1) unreached.push(i);
+  if (unreached.length > 0) layers.push(unreached);
+
+  const positions = new Float32Array(graph.nodes.length * 2);
+  const cx = width / 2;
+  const cy = height / 2;
+  positions[root * 2] = cx;
+  positions[root * 2 + 1] = cy;
+
+  const angleOf = new Float64Array(graph.nodes.length);
+  let previousRadius = radii[root];
+  for (let d = 1; d < layers.length; d++) {
+    const ring = layers[d];
+    // Siblings from the same parent stay together, and within that, same-module
+    // nodes stay together — so a ring reads as bands rather than confetti.
+    ring.sort((a, b) => angleOf[a] - angleOf[b] || clusterKeyOf(graph.nodes[a]).localeCompare(clusterKeyOf(graph.nodes[b])));
+    const need = ring.reduce((sum, i) => sum + (radii[i] + RING_PAD) * 2, 0);
+    const radius = Math.max(previousRadius + RING_PAD * 4, need / (Math.PI * 2));
+    let walked = 0;
+    for (const i of ring) {
+      const w = (radii[i] + RING_PAD) * 2;
+      const angle = ((walked + w / 2) / need) * Math.PI * 2;
+      walked += w;
+      angleOf[i] = angle;
+      positions[i * 2] = cx + Math.cos(angle) * radius;
+      positions[i * 2 + 1] = cy + Math.sin(angle) * radius;
+    }
+    previousRadius = radius + Math.max(...ring.map((i) => radii[i]));
+  }
+  return positions;
+}
+
+/**
  * Starting positions: clustered by directory, spread by how much has to fit.
  *
  * A force layout is largely decided by where it starts. Seeding every node on one
@@ -80,9 +220,19 @@ function clusterKeyOf(node: VizNode): string {
  * the arrangement is equally spaced whether it holds twelve nodes or twelve
  * thousand.
  */
-export function seedPositions(nodes: VizNode[], radii: Float32Array, width: number, height: number): Float32Array {
+export function seedPositions(
+  nodes: VizNode[], radii: Float32Array, width: number, height: number, graph?: VizGraph,
+): Float32Array {
   const out = new Float32Array(nodes.length * 2);
   if (nodes.length === 0) return out;
+
+  // Prefer a tree rooted at the entry point: same spacing rules, but the picture
+  // starts out saying something rather than merely being evenly spread.
+  if (graph) {
+    const rootId = findRoot(graph);
+    const tree = rootId ? radialTreeSeed(graph, radii, width, height, rootId) : null;
+    if (tree) return tree;
+  }
 
   const clusters = new Map<string, number[]>();
   for (let i = 0; i < nodes.length; i++) {
@@ -225,9 +375,21 @@ export function layeredLayout(graph: VizGraph, nodes: VizNode[]): Float32Array {
   return out;
 }
 
-/** Positions for a non-force mode, or null for force (which the worker owns). */
-export function staticLayout(mode: LayoutMode, graph: VizGraph, depth: number): Float32Array | null {
+/**
+ * Positions for a non-force mode, or null for force (which the worker owns).
+ *
+ * `tree` is also what seeds the force layout, but as a mode it is kept exactly:
+ * a force pass spends its whole run trading the ordering away for even spacing,
+ * so a reader who wants the ordering has to be able to say so and keep it.
+ */
+export function staticLayout(
+  mode: LayoutMode, graph: VizGraph, depth: number, radii: Float32Array,
+): Float32Array | null {
   if (mode === "radial") return radialLayout(graph.nodes, Math.max(1, depth || 2));
   if (mode === "layered") return layeredLayout(graph, graph.nodes);
+  if (mode === "tree") {
+    const root = findRoot(graph);
+    return root ? radialTreeSeed(graph, radii, 1200, 900, root) : null;
+  }
   return null;
 }

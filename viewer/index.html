@@ -26,7 +26,8 @@
 
 <main class="stage" id="stage">
   <div class="canvas-wrap" id="canvasWrap">
-    <canvas class="graph" id="graphCanvas" role="img" aria-label="Force-directed graph"></canvas>
+    <canvas class="graph" id="graphCanvas" role="img" aria-label="Force-directed graph"
+      title="Click a node to see what it touches · double-click a group to open it · drag to place, double-click to release"></canvas>
     <div class="edgestyle" id="edgeChips"><span class="cap">Edges</span></div>
     <div class="tools" id="tools">
       <div class="toolrow">
@@ -34,6 +35,7 @@
         <select id="groupSel" class="sel" title="Roll symbols up by directory"></select>
         <label class="cap" for="layoutSel">Layout</label>
         <select id="layoutSel" class="sel" title="How positions are chosen">
+          <option value="tree">tree</option>
           <option value="force">force</option>
           <option value="radial">radial</option>
           <option value="layered">layered</option>

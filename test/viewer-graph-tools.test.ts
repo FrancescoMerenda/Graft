@@ -321,3 +321,71 @@ test("top-level convention directories become one repo-root group, named for the
   assert.equal(byId.get("group:")?.name, "CMU", "the root group is named after the repo");
   assert.equal(byId.get("group:")?.count, 2);
 });
+
+/* ------------------------------------------------------------- entry-rooted -- */
+
+test("findRoot prefers a conventional entry file, shallowest first", async () => {
+  const { findRoot } = await import("../viewer/layouts.js");
+  const g: VizGraph = {
+    meta: { nodeCount: 0, edgeCount: 0 },
+    nodes: [
+      node("vendor/dep/main.c#x", "vendor/dep/main.c"),
+      node("main.cpp#app", "main.cpp"),
+      node("libs/util.cpp#helper", "libs/util.cpp"),
+    ],
+    edges: [edge("main.cpp#app", "libs/util.cpp#helper")],
+  };
+  // The top-level entry point, not the one buried in a dependency.
+  assert.equal(findRoot(g), "main.cpp#app");
+});
+
+test("findRoot falls back to what depends on the most, not what is depended on most", async () => {
+  const { findRoot } = await import("../viewer/layouts.js");
+  const g: VizGraph = {
+    meta: { nodeCount: 0, edgeCount: 0 },
+    nodes: ["a", "b", "c", "hub"].map((n) => node(`f.c#${n}`, "f.c")),
+    edges: [
+      edge("f.c#a", "f.c#hub"), edge("f.c#b", "f.c#hub"), edge("f.c#c", "f.c#hub"),
+      edge("f.c#a", "f.c#b"), edge("f.c#a", "f.c#c"),
+    ],
+  };
+  // `hub` has the highest total degree, but it is the BOTTOM of the graph — `a` is
+  // what reaches everything, and a program is drawn from its top.
+  assert.equal(findRoot(g), "f.c#a");
+});
+
+test("findRoot on a rolled-up graph picks the repo's own root group", async () => {
+  const { findRoot } = await import("../viewer/layouts.js");
+  const g = groupGraph(
+    {
+      meta: { nodeCount: 0, edgeCount: 0, repoName: "CMU" },
+      nodes: [node("sources/main.cpp#main", "sources/main.cpp"), node("libs/mcl/a.cpp#f", "libs/mcl/a.cpp")],
+      edges: [edge("sources/main.cpp#main", "libs/mcl/a.cpp#f")],
+    },
+    { depth: 2 },
+  );
+  assert.equal(findRoot(g), "group:");
+});
+
+test("radialTreeSeed puts the root at the centre and each layer on its own ring", async () => {
+  const { radialTreeSeed } = await import("../viewer/layouts.js");
+  const g: VizGraph = {
+    meta: { nodeCount: 0, edgeCount: 0 },
+    nodes: ["main", "a", "b", "deep", "island"].map((n) => node(`f.c#${n}`, "f.c")),
+    edges: [
+      edge("f.c#main", "f.c#a"), edge("f.c#main", "f.c#b"), edge("f.c#a", "f.c#deep"),
+    ],
+  };
+  const radii = Float32Array.from(g.nodes.map(() => 12));
+  const pos = radialTreeSeed(g, radii, 800, 600, "f.c#main")!;
+  const at = (id: string) => {
+    const i = g.nodes.findIndex((n) => n.id === id);
+    return Math.hypot(pos[i * 2] - 400, pos[i * 2 + 1] - 300);
+  };
+  assert.equal(at("f.c#main"), 0, "the root is the centre");
+  // One hop out, two hops further out, and both hops at the same radius as each other.
+  assert.ok(Math.abs(at("f.c#a") - at("f.c#b")) < 0.001, "same depth, same ring");
+  assert.ok(at("f.c#deep") > at("f.c#a"), "deeper means further out");
+  // Nothing reaches `island`, so it rings the outside rather than vanishing.
+  assert.ok(at("f.c#island") > at("f.c#deep"), "unreachable nodes go outermost");
+});

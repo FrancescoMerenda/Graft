@@ -34,7 +34,10 @@ const tools = {
   depth: 0,
   scope: undefined as string | undefined,
   hideOrphans: false,
-  layout: "force" as LayoutMode,
+  // Tree by default: a force layout answers "what is near what", but the first
+  // question anyone has of an unfamiliar codebase is "where does it start", and
+  // only one of those two is a shape you can read on arrival.
+  layout: "tree" as LayoutMode,
   /** Which kind of relation is on screen: what the code does, or how the tree is
    * assembled. See `setLayer`. */
   layer: "code" as Layer | "all",
@@ -183,7 +186,10 @@ function updateCounts(): void {
 
 /* ---------- detail panel ---------- */
 function showDetail(id: string | null): void {
-  renderDetail($("detail"), state.tab === "context" ? state.context : state.code, graphTab(), id, (next) => {
+  // The graph on screen, not the raw one: a rolled-up bubble's id exists only in
+  // the grouped graph, so looking it up in the raw one left the panel empty for
+  // every module the reader clicked.
+  renderDetail($("detail"), state.tab === "outline" ? state.code : activeGraph(), graphTab(), id, (next) => {
     if (state.tab === "outline") {
       showDetail(next);
       renderOutline($("tree"), state.code!, next, state.outlineOpen, showDetail);
@@ -420,12 +426,13 @@ function applyTools(): void {
   }
 
   view.setData(shown, graphTab());
-  const positions = staticLayout(tools.layout, shown, tools.depth || 2);
+  const positions = staticLayout(tools.layout, shown, tools.depth || 2, view.radii);
   if (positions) view.useStaticPositions(positions);
   else view.reheat();
   view.resetView();
 
   renderGroupOptions(raw);
+  ($("layoutSel") as HTMLSelectElement).value = tools.layout;
   renderCrumbs();
   setLayer(tools.layer);
   renderChips();

@@ -145,6 +145,13 @@ const MINIMAP_SAMPLES = 3000;
 /** Owner badges are two circles and a glyph run each — prominent nodes only. */
 const BADGE_MIN_K = 0.8;
 
+/** Breathing room between neighbours on a focus ring, in world units. */
+const RING_GAP = 30;
+/** How much wider than the exact fit a focus ring is drawn. */
+const RING_EASE = 1.25;
+/** How long a rearrangement takes to travel, in milliseconds. */
+const TWEEN_MS = 480;
+
 /** Hit-test grid cell, in world units. Roughly three node diameters: big enough
  * that the grid stays small, small enough that a lookup scans a handful of nodes. */
 const GRID_CELL = 96;
@@ -270,6 +277,12 @@ export class GraphView {
   private hoverQueued = false;
   /** Nodes the reader has placed by hand. They stay put until released. */
   private pinned = new Set<number>();
+  /** Nodes currently held in a ring around the selection. Released when the
+   * selection changes, unless the reader had pinned them themselves. */
+  private arranged = new Set<number>();
+  /** An in-flight rearrangement: where each node was, and where it is going. */
+  private tween: Array<{ i: number; fx: number; fy: number; tx: number; ty: number }> = [];
+  private tweenStart = 0;
 
   /**
    * Built geometry, reused across frames that only moved the camera.
@@ -374,7 +387,7 @@ export class GraphView {
     // Seed clustered by directory and spaced by area (see ./layouts.ts), then let
     // anything that already had a position keep it — morphing between two views of
     // the same graph should move what changed and nothing else.
-    positions.set(seedPositions(graph.nodes, radii, W, H));
+    positions.set(seedPositions(graph.nodes, radii, W, H, graph));
     for (let i = 0; i < count; i++) {
       const prev = prevIndex.get(graph.nodes[i].id);
       if (prev !== undefined && prevPos.length > prev * 2 + 1) {
@@ -419,6 +432,8 @@ export class GraphView {
       height: H,
     };
     this.pinned.clear();
+    this.arranged.clear();
+    this.tween = [];
     this.hubIndices = this.nodes
       .map((n, i) => [i, n.deg] as const)
       .filter(([, d]) => d > 0)
@@ -483,8 +498,192 @@ export class GraphView {
   select(id: string | null): void {
     this.selected = id;
     if (id !== null) this.selectedEdge = null;
+    this.arrangeAround(id === null ? -1 : this.index.get(id) ?? -1);
     this.restyle();
     this.onSelect(id);
+  }
+
+  /**
+   * Lay a selection's neighbours out in a ring around it.
+   *
+   * A force layout answers "what is near what" for the graph as a whole, which is
+   * the wrong question once someone has picked one node: then the only thing that
+   * matters is what THIS touches, and a general-purpose blob buries that among
+   * everything it doesn't. So selecting rearranges the neighbourhood into the
+   * shape the question has — the subject in the middle, what it calls on the
+   * upper arc, what calls it on the lower one — and puts everything back when the
+   * selection is dropped.
+   *
+   * The ring is sized so the neighbours sit side by side without touching, and
+   * each one's share of the arc is proportional to its own width, so a bubble
+   * worth a thousand symbols is not allotted the same sliver as a single
+   * function. Same-module neighbours are kept adjacent, so colour reads as bands
+   * rather than confetti.
+   */
+  private arrangeAround(center: number): void {
+    const previous = this.arranged;
+    this.arranged = new Set();
+    const targets = new Map<number, [number, number]>();
+
+    if (center >= 0 && !this.hiddenTypes[this.nodes[center].type]) {
+      const outs = new Set<number>();
+      const ins = new Set<number>();
+      for (const e of this.edges) {
+        if (this.hiddenRels[chipKey(e.relation)]) continue;
+        if (this.hiddenTypes[this.nodes[e.s].type] || this.hiddenTypes[this.nodes[e.t].type]) continue;
+        if (e.s === center && e.t !== center) outs.add(e.t);
+        else if (e.t === center && e.s !== center) ins.add(e.s);
+      }
+      // A neighbour on both sides is drawn as an outgoing one: "what this depends
+      // on" is the question people ask first, and a node cannot sit twice.
+      for (const i of outs) ins.delete(i);
+
+      const pos = this.layout.positions;
+      const cx = pos[center * 2];
+      const cy = pos[center * 2 + 1];
+      // Top arc for callees, bottom for callers. Canvas y grows downward, so the
+      // top half is the negative one.
+      const rOut = this.placeArc([...outs], center, cx, cy, -Math.PI, 0, targets);
+      const rIn = this.placeArc([...ins], center, cx, cy, 0, Math.PI, targets);
+      const ring = Math.max(rOut, rIn);
+      if (targets.size > 0) {
+        targets.set(center, [cx, cy]);
+        this.clearSpace(center, cx, cy, ring, targets);
+      }
+    }
+
+    for (const i of targets.keys()) this.arranged.add(i);
+
+    // Hand back anything the previous selection had borrowed — but never a node
+    // the reader placed themselves.
+    for (const i of previous) {
+      if (this.arranged.has(i) || this.pinned.has(i)) continue;
+      this.layout.fix(i, null, null);
+    }
+    if (targets.size > 0) this.frameArrangement(targets);
+    this.beginTween(targets);
+  }
+
+  /**
+   * Evict whatever is standing inside the ring.
+   *
+   * A neighbourhood laid out in a clean circle is still unreadable if a dozen
+   * unrelated bubbles are sitting on top of its edges — the arrangement makes the
+   * relations findable, and anything drawn across them undoes exactly that. So
+   * every node that is not part of the arrangement and falls inside the ring is
+   * pushed straight out along its own bearing, which keeps the rest of the graph
+   * recognisably where it was: things move outward, not somewhere else entirely.
+   */
+  private clearSpace(
+    center: number, cx: number, cy: number, ring: number,
+    targets: Map<number, [number, number]>,
+  ): void {
+    const pos = this.layout.positions;
+    const keepOut = ring + RING_GAP * 2;
+    for (let i = 0; i < this.nodes.length; i++) {
+      if (i === center || targets.has(i) || this.pinned.has(i)) continue;
+      if (this.hiddenTypes[this.nodes[i].type]) continue;
+      const dx = pos[i * 2] - cx;
+      const dy = pos[i * 2 + 1] - cy;
+      const d = Math.hypot(dx, dy);
+      const want = keepOut + this.nodes[i].r;
+      if (d >= want) continue;
+      // Directly on the centre: no bearing to keep, so pick one from its index —
+      // deterministic, and spread out rather than all fleeing the same way.
+      const angle = d < 1e-3 ? (i * 2.39996) % (Math.PI * 2) : Math.atan2(dy, dx);
+      targets.set(i, [cx + Math.cos(angle) * want, cy + Math.sin(angle) * want]);
+    }
+  }
+
+  /**
+   * Move everything to its target over {@link TWEEN_MS}, rather than teleporting.
+   *
+   * A graph that rearranges itself between one frame and the next has, as far as
+   * the reader can tell, been replaced by a different graph: nothing connects
+   * where a bubble was to where it now is. Watching it travel is what makes it the
+   * same picture, seen better. The layout is told the final position immediately —
+   * so it agrees with the screen the moment the tween lands — and the animation
+   * itself is local, costing nothing but a lerp per node per frame.
+   */
+  private beginTween(targets: Map<number, [number, number]>): void {
+    const pos = this.layout.positions;
+    this.tween = [];
+    for (const [i, [tx, ty]] of targets) {
+      this.tween.push({ i, fx: pos[i * 2], fy: pos[i * 2 + 1], tx, ty });
+      this.layout.fix(i, tx, ty);
+    }
+    this.tweenStart = performance.now();
+    this.dirty = true;
+  }
+
+  /** One frame of the rearrangement; true while there is further to go. */
+  private stepTween(): boolean {
+    if (this.tween.length === 0) return false;
+    const t = Math.min(1, (performance.now() - this.tweenStart) / TWEEN_MS);
+    // Ease in and out: things that start and stop gently read as moving under
+    // their own weight rather than being dragged.
+    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const pos = this.layout.positions;
+    for (const m of this.tween) {
+      pos[m.i * 2] = m.fx + (m.tx - m.fx) * e;
+      pos[m.i * 2 + 1] = m.fy + (m.ty - m.fy) * e;
+    }
+    this.stamp++;
+    if (t >= 1) { this.tween = []; return false; }
+    return true;
+  }
+
+  /** Put the ring on screen: centred, and zoomed so all of it fits with a margin.
+   * Arranging a neighbourhood the reader then has to go hunting for would be a
+   * strictly worse answer than leaving it where it was. */
+  private frameArrangement(targets: Map<number, [number, number]>): void {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [i, [x, y]] of targets) {
+      const r = this.nodes[i].r;
+      minX = Math.min(minX, x - r); maxX = Math.max(maxX, x + r);
+      minY = Math.min(minY, y - r); maxY = Math.max(maxY, y + r);
+    }
+    const pad = 70;
+    const w = maxX - minX + pad * 2;
+    const h = maxY - minY + pad * 2;
+    const k = this.clampK(Math.min(this.width / w, this.height / h));
+    this.userMoved = true; // an arrangement is a deliberate move; do not auto-fit over it
+    this.glideTo({
+      k,
+      x: this.width / 2 - ((minX + maxX) / 2) * k,
+      y: this.height / 2 - ((minY + maxY) / 2) * k,
+    });
+  }
+
+  /** Place `members` evenly along an arc, each taking room in proportion to its
+   * own size, and pin them there. */
+  private placeArc(
+    members: number[], center: number, cx: number, cy: number,
+    from: number, to: number, targets: Map<number, [number, number]>,
+  ): number {
+    if (members.length === 0) return 0;
+    // Same-module neighbours adjacent, biggest first within a module.
+    members.sort((a, b) =>
+      this.nodes[a].group.localeCompare(this.nodes[b].group) || this.nodes[b].r - this.nodes[a].r);
+
+    const width = (i: number) => (this.nodes[i].r + RING_GAP) * 2;
+    const total = members.reduce((sum, i) => sum + width(i), 0);
+    const span = to - from;
+    const centreR = this.nodes[center].r;
+    const widest = Math.max(...members.map((i) => this.nodes[i].r));
+    // Big enough that the arc holds every member side by side, and never so close
+    // that the ring touches the centre node or itself. `total / span` is the exact
+    // fit; the extra factor is the difference between "does not overlap" and
+    // "reads as a ring", which is the point of arranging at all.
+    const radius = Math.max(centreR + widest + RING_GAP * 3, (total / span) * RING_EASE);
+
+    let walked = 0;
+    for (const i of members) {
+      const angle = from + ((walked + width(i) / 2) / total) * span;
+      walked += width(i);
+      targets.set(i, [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
+    }
+    return radius;
   }
 
   private selectEdge(edge: SimEdge | null): void {
@@ -606,7 +805,13 @@ export class GraphView {
     this.layout.reheat(0.6);
   }
 
-  /** Adopt an exact layout (radial, layered) in place of the simulation. */
+  /** The radii the layout is using, so a caller computing an exact layout sizes
+   * its rings from the same numbers the renderer draws. */
+  get radii(): Float32Array {
+    return Float32Array.from(this.nodes, (n) => n.r);
+  }
+
+  /** Adopt an exact layout (tree, radial, layered) in place of the simulation. */
   useStaticPositions(positions: Float32Array): void {
     this.layout.setStatic(positions);
     this.geomCache = null;
@@ -761,11 +966,11 @@ export class GraphView {
         this.pinned.add(drag.i);
         this.dirty = true;
       } else if (drag) {
-        const node = this.nodes[drag.i];
-        this.select(node.id);
-        // A bubble is a place, not a symbol: clicking it means "go in there".
-        // Only on a click — dragging one is arranging the map, not entering it.
-        if (node.type === "group" && node.path) this.onDrill(node.path);
+        // Select only. Drilling used to happen on this same click, which meant a
+        // module bubble could never be *looked at* — the graph was replaced before
+        // its neighbourhood could be shown. Opening it is a double-click, the way
+        // opening a folder always has been.
+        this.select(this.nodes[drag.i].id);
       } else if (pan && !moved) {
         // Nothing under the pointer that was a node — try the edges before
         // treating it as a click on empty canvas.
@@ -788,6 +993,9 @@ export class GraphView {
       const w = this.toWorld(ev.clientX, ev.clientY);
       const hit = this.nodeAt(w.x, w.y);
       if (hit >= 0) {
+        const node = this.nodes[hit];
+        // A bubble is a place, not a symbol: double-clicking it means "go in".
+        if (node.type === "group" && node.path) { this.onDrill(node.path); return; }
         if (!this.pinned.delete(hit)) return;
         this.layout.fix(hit, null, null);
       } else {
@@ -863,6 +1071,7 @@ export class GraphView {
 
   private loop(): void {
     const run = (): void => {
+      if (this.stepTween()) this.dirty = true;
       if (this.stepCamera()) this.dirty = true;
       if (this.dirty) {
         this.dirty = false;
@@ -885,7 +1094,9 @@ export class GraphView {
     const pos = this.layout.positions;
     const sel = this.selected === null ? -1 : this.index.get(this.selected) ?? -1;
     const q = this.query.toLowerCase();
-    if (this.layout.hot && this.nodes.length > DRAFT_MIN_NODES) {
+    // A tween moves positions every frame just as the layout does, so it
+    // invalidates the built geometry just as often and needs the same cheap pass.
+    if ((this.layout.hot || this.tween.length > 0) && this.nodes.length > DRAFT_MIN_NODES) {
       this.drawDraft(pos, k);
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       this.drawMinimap(pos);
@@ -1116,7 +1327,10 @@ export class GraphView {
       }
       shapePath(bucket.path, n.shape, pos[i * 2], pos[i * 2 + 1], Math.max(n.r, minR));
     }
-    return [...buckets.values()];
+    // Ascending alpha: whatever is lit is drawn last and therefore on top. With a
+    // selection, the faded remainder would otherwise scribble over the very
+    // neighbourhood the selection exists to isolate.
+    return [...buckets.values()].sort((a, b) => a.alpha - b.alpha);
   }
 
   /**
@@ -1261,9 +1475,11 @@ export class GraphView {
       ctx.fillStyle = color;
       this.arrowHead(pos, e, 1.25);
     }
-    if (k < LABEL_MIN_K) return;
+    // No zoom gate here, unlike the general labels: a focus ring has a handful of
+    // edges and naming them is the entire point of having focused.
     ctx.font = LABEL_FONT;
     ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
     ctx.lineWidth = 3 / k;
     ctx.strokeStyle = this.theme.canvas;
     for (const { e, role } of focused) {
