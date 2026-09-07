@@ -18,7 +18,7 @@ const state = {
   outlineOpen: {} as Record<string, boolean>,
 };
 
-const view = new GraphView($("graphSvg") as unknown as SVGSVGElement);
+const view = new GraphView($("graphCanvas") as HTMLCanvasElement);
 
 function activeGraph(): VizGraph | null {
   return state.tab === "context" ? state.context : state.code;

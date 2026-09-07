@@ -65,8 +65,13 @@ button:focus-visible,input:focus-visible,.tree-row:focus-visible{outline:2px sol
 
 .stage{display:flex;flex:1;min-height:0;background:var(--canvas)}
 .canvas-wrap{position:relative;flex:1;min-width:0}
-svg.graph{display:block;width:100%;height:100%;cursor:grab}
-svg.graph:active{cursor:grabbing}
+canvas.graph{display:block;width:100%;height:100%;cursor:grab;touch-action:none}
+canvas.graph:active{cursor:grabbing}
+/* Hover readout. Labels are rationed on a large graph, so this is often the only
+   way to name the dot under the pointer without clicking it. */
+.gtip{position:absolute;transform:translate(-50%,-100%);pointer-events:none;z-index:5;
+  background:var(--panel);color:var(--ink);border:1px solid var(--border);border-radius:6px;
+  padding:3px 7px;font-size:11.5px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.16)}
 
 .edgestyle{position:absolute;top:12px;left:14px;display:flex;align-items:center;gap:5px;flex-wrap:wrap;max-width:75%}
 .edgestyle .cap{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-right:3px}

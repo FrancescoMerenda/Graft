@@ -12,6 +12,25 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const outDir = join(root, "dist", "viewer");
 mkdirSync(outDir, { recursive: true });
 
+/**
+ * The layout worker is bundled first and inlined into the app bundle as a string.
+ *
+ * It cannot ship as its own file: `graft viz --export` writes ONE self-contained
+ * HTML page, and a page opened from disk has nowhere to fetch /sim-worker.js from.
+ * A string the app turns into a blob URL works identically served or exported.
+ *
+ * `iife`, not `esm`: a blob worker started as a module inherits the page's CSP for
+ * its own imports, and there is nothing to import once it is bundled anyway.
+ */
+const worker = await build({
+  entryPoints: [join(root, "viewer", "sim-worker.ts")],
+  bundle: true,
+  minify: true,
+  format: "iife",
+  target: "es2022",
+  write: false,
+});
+
 await build({
   entryPoints: [join(root, "viewer", "main.ts")],
   bundle: true,
@@ -19,13 +38,14 @@ await build({
   format: "esm",
   target: "es2022",
   outfile: join(outDir, "app.js"),
+  define: { __GRAFT_SIM_WORKER__: JSON.stringify(worker.outputFiles[0].text) },
 });
 
 for (const asset of ["index.html", "style.css"]) {
   copyFileSync(join(root, "viewer", asset), join(outDir, asset));
 }
 
-console.log("viewer bundle → dist/viewer/");
+console.log(`viewer bundle → dist/viewer/ (layout worker inlined, ${Math.round(worker.outputFiles[0].text.length / 1024)}KB)`);
 
 // The generic (breadth) tier's tags.scm query files are runtime assets — tsc
 // doesn't emit non-TS files, so copy them into dist so the published package
