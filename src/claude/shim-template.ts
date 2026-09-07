@@ -30,7 +30,9 @@ const BAKED = ${JSON.stringify(bakedDir)};
 // The dist/claude dir of @nanonets/graft resolved from a base whose node_modules is searched.
 function fromPkg(base) {
   try {
+    if (!base || !fs.existsSync(base)) return null;
     const pkg = require.resolve('@nanonets/graft/package.json', { paths: [base] });
+    if (!fs.realpathSync(pkg).startsWith(fs.realpathSync(base))) return null;
     return path.join(path.dirname(pkg), 'dist', 'claude');
   } catch { return null; }
 }

@@ -20,6 +20,7 @@ import { zeroHitNote } from '../src/search/grep-cli.js';
 import { WALK_RELATIONS } from '../src/graph/relations.js';
 import { readGraph, wiringPath } from '../src/graph/write.js';
 import type { GraphV1, NodeV1 } from '../src/graph/types.js';
+import { cliExecArgs } from './helpers.js';
 
 function fileNode(path: string, lines: number): NodeV1 {
   return {
@@ -80,7 +81,7 @@ function needleRepo(): string {
       '',
     ].join('\n'),
   );
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
@@ -177,7 +178,7 @@ test('A3: a duplicate-named definition displays its minted ordinal in the groupe
       '',
     ].join('\n'),
   );
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   const graph = loadBuiltGraph(d);
   const r = grepGraph(graph, d, 'NEEDLE');
 

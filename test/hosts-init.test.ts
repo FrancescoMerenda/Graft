@@ -9,7 +9,7 @@ import { join, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runHostsInit } from '../src/hosts/init.js';
 import { toPosixPath } from '../src/util/paths.js';
-import { runCli, tmpRepo } from './helpers.js';
+import { cliExecArgs, runCli, tmpRepo } from './helpers.js';
 
 function fresh(): string { return tmpRepo('hostsinit'); }
 
@@ -56,7 +56,7 @@ test('preserves user content around the fenced section', () => {
 
 test('CLI: graft init --agents gemini writes GEMINI.md and exits 0', () => {
   const repo = fresh();
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'gemini'], {
+  execFileSync(process.execPath, cliExecArgs(['init', repo, '--no-build', '--agents', 'gemini']), {
     encoding: 'utf8',
   });
   assert.ok(readFileSync(join(repo, 'GEMINI.md'), 'utf8').includes('graft ask'));
@@ -65,7 +65,7 @@ test('CLI: graft init --agents gemini writes GEMINI.md and exits 0', () => {
 test('CLI: unknown agent id exits non-zero', () => {
   const repo = fresh();
   assert.throws(() =>
-    execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'nope'], {
+    execFileSync(process.execPath, cliExecArgs(['init', repo, '--no-build', '--agents', 'nope']), {
       encoding: 'utf8', stdio: 'pipe',
     }),
   );
@@ -81,7 +81,7 @@ test('explicit empty agents list writes nothing, even when home has agent dirs (
 
 test('CLI: --agents claude with --no-build writes .claude/ but no other-agent files', () => {
   const repo = fresh();
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'claude'], {
+  execFileSync(process.execPath, cliExecArgs(['init', repo, '--no-build', '--agents', 'claude']), {
     encoding: 'utf8',
   });
   assert.ok(existsSync(join(repo, '.claude')));
@@ -95,7 +95,7 @@ test('CLI: --agents claude gemini nope exits non-zero and leaves repo untouched 
   assert.throws(() =>
     execFileSync(
       process.execPath,
-      ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'claude', 'gemini', 'nope'],
+      cliExecArgs(['init', repo, '--no-build', '--agents', 'claude', 'gemini', 'nope']),
       { encoding: 'utf8', stdio: 'pipe' },
     ),
   );
@@ -124,7 +124,7 @@ test('mcp: false skips MCP registration', () => {
 
 test('CLI: --no-mcp writes the rule file but no MCP config', () => {
   const repo = fresh();
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'cursor', '--no-mcp'], { encoding: 'utf8' });
+  execFileSync(process.execPath, cliExecArgs(['init', repo, '--no-build', '--agents', 'cursor', '--no-mcp']), { encoding: 'utf8' });
   assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
   assert.ok(!existsSync(join(repo, '.cursor', 'mcp.json')));
 });
@@ -175,7 +175,7 @@ test('global: false keeps the instruction file but skips every ~ write', () => {
 function cliStderr(repo: string, home: string, extra: string[] = []): string {
   const res = runCli(['init', repo, '--no-build', ...extra], { home });
   assert.equal(res.status, 0, res.describe());
-  return res.stderr ?? '';
+  return `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
 }
 
 test('CLI: no flags and no TTY writes nothing and names the detected agents', () => {

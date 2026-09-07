@@ -40,6 +40,19 @@ export function tmpRepo(tag: string): string {
  * pointed at the real profile — the test then exercises whatever agents happen to
  * be installed on the runner instead of the fixture it built.
  */
+export const IS_BUN = "bun" in process.versions;
+
+// Several tests `git init` a scratch repo and `git commit` into it to exercise
+// git paths. Inheriting developer's global gpg/gitsign config causes signing storms.
+// Set process.env.GIT_CONFIG_* so child git commands never prompt for signing.
+if (!process.env.GIT_CONFIG_COUNT) {
+  process.env.GIT_CONFIG_COUNT = "2";
+  process.env.GIT_CONFIG_KEY_0 = "commit.gpgsign";
+  process.env.GIT_CONFIG_VALUE_0 = "false";
+  process.env.GIT_CONFIG_KEY_1 = "tag.gpgsign";
+  process.env.GIT_CONFIG_VALUE_1 = "false";
+}
+
 export function homeEnv(home: string): NodeJS.ProcessEnv {
   return { ...process.env, HOME: home, USERPROFILE: home };
 }
@@ -76,8 +89,13 @@ export interface CliRun extends SpawnSyncReturns<string> {
  * The `timeout` matters just as much: a child that blocks on stdin used to burn
  * the runner's patience silently, so it fails fast and says so instead.
  */
+export function cliExecArgs(args: string[] = []): string[] {
+  return IS_BUN ? ["src/cli.ts", ...args] : ["--import", "tsx", "src/cli.ts", ...args];
+}
+
 export function runCli(args: string[], opts: { home?: string; timeoutMs?: number } = {}): CliRun {
-  const res = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
+  const execArgs = cliExecArgs(args);
+  const res = spawnSync(process.execPath, execArgs, {
     encoding: "utf8",
     timeout: opts.timeoutMs ?? 120_000,
     env: opts.home ? homeEnv(opts.home) : process.env,

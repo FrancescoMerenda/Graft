@@ -202,7 +202,7 @@ export function reducePicker(state: PickerState, key: PickerKey): PickerState {
   }
 }
 
-export function renderPicker(state: PickerState, tty = true): string {
+export function renderPicker(state: PickerState, tty = true, columns?: number): string {
   const dim = tty ? muted : (s: string) => s;
   const hot = tty ? indigo : (s: string) => s;
   const warn = tty ? amber : (s: string) => s;
@@ -225,7 +225,14 @@ export function renderPicker(state: PickerState, tty = true): string {
     const gap = ' '.repeat(width - label(row).length);
     const name = here ? hot(row.label) : row.label;
     const tag = row.detected || row.kind === 'setting' ? '' : dim(' (not detected)');
-    const summary = row.hasGlobal ? warn(row.summary) : dim(row.summary);
+    let summaryText = row.summary;
+    if (tty && columns && columns > width + 12) {
+      const maxSummary = columns - (width + 8);
+      if (summaryText.length > maxSummary) {
+        summaryText = summaryText.slice(0, Math.max(0, maxSummary - 1)) + '…';
+      }
+    }
+    const summary = row.hasGlobal ? warn(summaryText) : dim(summaryText);
     lines.push(`${here ? '›' : ' '} ${box} ${name}${tag}${gap}  ${summary}`);
   }
   lines.push('', dim('↑↓ move · space toggle · a all · enter confirm · esc cancel'));
@@ -273,8 +280,8 @@ export async function runPicker(
 
   let lastLines = 0;
   const draw = () => {
-    if (lastLines > 0) out.write(`\x1b[${lastLines}A\x1b[0J`);
-    const text = renderPicker(state);
+    if (lastLines > 0) out.write(`\r\x1b[${lastLines}A\x1b[0J`);
+    const text = renderPicker(state, true, out.columns);
     out.write(`${text}\n`);
     lastLines = text.split('\n').length;
   };
@@ -282,6 +289,9 @@ export async function runPicker(
   const wasRaw = Boolean(stdin.isRaw);
   stdin.setRawMode?.(true);
   stdin.resume();
+  // Disable line autowrap and hide cursor during picker to prevent wrapped
+  // lines from desyncing cursor rows and redrawing ghost headers.
+  out.write('\x1b[?7l\x1b[?25l');
   draw();
 
   try {
@@ -312,6 +322,8 @@ export async function runPicker(
       stdin.on('end', onEnd);
     });
   } finally {
+    // Re-enable autowrap and show cursor
+    out.write('\x1b[?7h\x1b[?25h');
     stdin.setRawMode?.(wasRaw);
     stdin.pause();
   }

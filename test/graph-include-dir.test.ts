@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { probeDrift, isClean } from "../src/graph/fingerprint.js";
 import type { GraphV1 } from "../src/graph/types.js";
+import { cliExecArgs } from "./helpers.js";
 
 function repoWithBuildDir(): string {
   const d = mkdtempSync(join(tmpdir(), "graft-include-dir-"));
@@ -26,7 +27,7 @@ function repoWithBuildDir(): string {
 }
 
 function runCli(args: string[]): void {
-  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { stdio: "pipe" });
+  execFileSync(process.execPath, cliExecArgs(args), { stdio: "pipe" });
 }
 
 /** Like {@link runCli}, but captures a non-zero exit instead of throwing —
@@ -34,7 +35,7 @@ function runCli(args: string[]): void {
  * reject bad input rather than run to completion. */
 function runCliCapture(args: string[]): { stdout: string; stderr: string; status: number } {
   try {
-    const stdout = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
+    const stdout = execFileSync(process.execPath, cliExecArgs(args), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -137,6 +137,7 @@ function graftJson(dir: string, args: string[], timeout: number = CHILD_TIMEOUT_
     // script and observe the exact args it was invoked with, instead of shelling
     // out to the real CLI (which isn't built relative to the TS source under test).
     const cliPath = process.env.GRAFT_TEST_CLI ?? graftCliPath();
+    if (!existsSync(cliPath)) return null;
     const out = execFileSync(process.execPath, [cliPath, ...args],
       { cwd: dir, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
     return JSON.parse(out);

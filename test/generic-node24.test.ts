@@ -9,7 +9,8 @@ test(
   { skip: Number(process.versions.node.split(".")[0]) < 24 ? "V8 Turboshaft regression starts in Node 24" : false },
   () => {
     const probe = join(dirname(fileURLToPath(import.meta.url)), "generic-node24-probe.ts");
-    const run = spawnSync(process.execPath, ["--import", "tsx", probe], {
+    const execArgs = "bun" in process.versions ? [probe] : ["--import", "tsx", probe];
+    const run = spawnSync(process.execPath, execArgs, {
       encoding: "utf8",
       timeout: 60_000,
     });

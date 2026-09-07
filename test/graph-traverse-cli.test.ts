@@ -13,6 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { cliExecArgs } from './helpers.js';
 
 function builtRepo(): string {
   const d = mkdtempSync(join(tmpdir(), 'graft-traversecli-'));
@@ -23,13 +24,13 @@ function builtRepo(): string {
       'export function sub(a: number, b: number): number {\n  return add(a, -b);\n}\n' +
       'export function compute(a: number, b: number): number {\n  return sub(a, b);\n}\n',
   );
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
 function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
   try {
-    const stdout = execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
+    const stdout = execFileSync(process.execPath, cliExecArgs(args), {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -117,7 +118,7 @@ function ambiguousRepo(): string {
   // A cross-file call to the ambiguous name — resolve.ts drops it rather than
   // guessing which `shared` it means, so NEITHER definition gets a caller edge.
   writeFileSync(join(d, 'src', 'user.ts'), 'import { shared } from "./a.js";\nexport function use(): number {\n  return shared();\n}\n');
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 

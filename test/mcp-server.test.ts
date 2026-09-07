@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { buildGraph } from '../src/graph/build.js';
+import { cliExecArgs } from './helpers.js';
 
 async function rpc(messages: object[], dir: string, expected: number): Promise<any[]> {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp', dir], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, cliExecArgs(['mcp', dir]), { stdio: ['pipe', 'pipe', 'pipe'] });
   const responses: any[] = [];
   let buf = '';
   child.stdout.on('data', (d) => {

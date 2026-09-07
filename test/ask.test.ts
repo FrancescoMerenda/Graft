@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildGraph } from "../src/graph/build.js";
 import { ask, formatAsk, skeleton, formatSkeleton, isTestPath } from "../src/ask/ask.js";
+import { cliExecArgs } from "./helpers.js";
 
 test("isTestPath: de-ranks test files, not real source", () => {
   for (const p of ["server/download_test.go", "packages/x/tests/foo.test.tsx", "a/__tests__/b.ts", "src/api.spec.ts", "pkg/foo/bar_test.go"])
@@ -988,7 +989,7 @@ test("CLI: `graft ask --in <unknown>` exits 1 with the scope-enumerating error o
     try {
       execFileSync(
         process.execPath,
-        ["--import", "tsx", "src/cli.ts", "ask", "how are errors handled", dir, "--in", "wrong"],
+        cliExecArgs(["ask", "how are errors handled", dir, "--in", "wrong"]),
         { encoding: "utf8", stdio: "pipe" },
       );
     } catch (err) {

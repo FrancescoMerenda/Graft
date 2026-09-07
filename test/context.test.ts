@@ -13,7 +13,7 @@ import { checkContext, indexFreshness, staleBanner } from "../src/context/check.
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../src/context/node-file.js";
 import { buildGraph } from "../src/graph/build.js";
 import { writeBuildConfig } from "../src/util/state.js";
-import { fakeProviders, PassthroughSummarizer } from "./helpers.js";
+import { cliExecArgs, fakeProviders, PassthroughSummarizer } from "./helpers.js";
 import type { Synthesizer } from "../src/index.js";
 
 // CLI-spawn helper (same pattern as test/graph-traverse-cli.test.ts) — these tests
@@ -22,7 +22,7 @@ import type { Synthesizer } from "../src/index.js";
 // `check` action, combining both layers' results.
 function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
   try {
-    const stdout = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
+    const stdout = execFileSync(process.execPath, cliExecArgs(args), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -543,7 +543,7 @@ test("graft build with GRAFT_NO_GITIGNORE and GRAFT_NO_IGNORE does not touch ign
   const dir = mkdtempSync(join(tmpdir(), "ctxgi-build-"));
   try {
     writeFileSync(join(dir, "main.ts"), "export function main(): number {\n  return 1;\n}\n");
-    execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "build", dir], {
+    execFileSync(process.execPath, cliExecArgs(["build", dir]), {
       stdio: "pipe",
       env: { ...process.env, GRAFT_NO_GITIGNORE: "1", GRAFT_NO_IGNORE: "1" },
     });

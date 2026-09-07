@@ -57,10 +57,11 @@ async function runBuild(
   baseUrl: string,
   extra: string[] = [],
 ): Promise<{ status: number | null; stderr: string; stdout: string }> {
+  const runner = "bun" in process.versions ? ["src/cli.ts"] : ["--import", "tsx", "src/cli.ts"];
   const child = spawn(
     process.execPath,
     [
-      "--import", "tsx", "src/cli.ts",
+      ...runner,
       "--provider", "openai",
       "--api-key", "test-key",
       "--base-url", baseUrl,

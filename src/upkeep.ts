@@ -90,7 +90,7 @@ export interface UpdateCache {
 
 /** Machine-global, not per-repo: "what's the latest graft" is one fact, and a
  * dev with twelve repos should cost the registry one request a day, not twelve. */
-export function updateCachePath(home: string = homedir()): string {
+export function updateCachePath(home: string = process.env.HOME || process.env.USERPROFILE || homedir()): string {
   return join(home, '.graft', 'update-check.json');
 }
 

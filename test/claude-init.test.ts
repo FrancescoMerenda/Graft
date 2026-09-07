@@ -11,6 +11,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { buildGraphIfMissing, runInit } from '../src/claude/init.js';
 import { formatInitEpilogue } from '../src/cli-epilogue.js';
 import { readStamp } from '../src/upkeep.js';
+import { cliExecArgs } from './helpers.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-init-')); }
 
@@ -84,11 +85,12 @@ test('CLI: --no-statusline leaves statusLine unset', () => {
   const d = fresh();
   const res = spawnSync(
     process.execPath,
-    ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents', '--no-statusline'],
+    cliExecArgs(['init', d, '--no-build', '--no-agents', '--no-statusline']),
     { encoding: 'utf8' },
   );
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /skipped Claude Code statusLine/);
+  const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+  assert.equal(res.status, 0, out);
+  assert.match(out, /skipped Claude Code statusLine/);
   const s = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
   assert.equal(s.statusLine, undefined);
   assert.equal(s.subagentStatusLine, undefined);
@@ -133,7 +135,7 @@ test('postinstall is silent under CI', () => {
 
 test('formatInitEpilogue: graph built shows stats, wordmark, and the 3-step list', () => {
   const out = formatInitEpilogue({ graphBuilt: true, nodes: 6398, edges: 10912 });
-  assert.match(out, /\|___\/\s*$/m);
+  assert.match(out, /\|___\/(\x1B\[[0-9;]*m)?\s*$/m);
   assert.ok(out.includes('6,398 nodes · 10,912 edges'));
   assert.ok(out.includes('1. restart your agent'));
   assert.ok(out.includes('2. code as usual'));
@@ -164,18 +166,19 @@ test('CLI: graft init epilogue has the wordmark + next steps, and never mentions
   const d = fresh();
   const res = spawnSync(
     process.execPath,
-    ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents'],
+    cliExecArgs(['init', d, '--no-build', '--no-agents']),
     { encoding: 'utf8' },
   );
-  assert.equal(res.status, 0, res.stderr);
-  assert.ok(res.stderr.includes('|___/'), 'wordmark present');
-  assert.ok(res.stderr.includes('code as usual'));
-  assert.ok(res.stderr.includes('restart your agent'));
-  assert.ok(res.stderr.includes('git add .claude'));
-  assert.ok(res.stderr.includes('graft ask'));
-  assert.ok(!res.stderr.includes('OPENROUTER'));
+  const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+  assert.equal(res.status, 0, out);
+  assert.ok(out.includes('|___/'), 'wordmark present');
+  assert.ok(out.includes('code as usual'));
+  assert.ok(out.includes('restart your agent'));
+  assert.ok(out.includes('git add .claude'));
+  assert.ok(out.includes('graft ask'));
+  assert.ok(!out.includes('OPENROUTER'));
   // --no-build, never built before → "build the graph" is step 1
-  assert.ok(res.stderr.includes('1. build the graph'));
+  assert.ok(out.includes('1. build the graph'));
 });
 
 // --- buildGraphIfMissing --------------------------------------------------

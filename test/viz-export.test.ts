@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { exportViz } from "../src/viz/export.js";
+import { cliExecArgs } from "./helpers.js";
 
 const VIEWER_HTML = `<!doctype html>
 <html lang="en">
@@ -185,7 +186,7 @@ test("viz export: tabs can be trimmed, and the payload goes with them", () => {
 test("viz --tabs: a bad tab name fails loudly rather than exporting a page missing a tab", () => {
   const run = (args: string[]): { status: number; stderr: string } => {
     try {
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", stdio: "pipe" });
+      execFileSync(process.execPath, cliExecArgs(args), { encoding: "utf8", stdio: "pipe" });
       return { status: 0, stderr: "" };
     } catch (err) {
       const e = err as { status?: number; stderr?: string };

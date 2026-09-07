@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { probeDrift, isClean, readFingerprint } from "../src/graph/fingerprint.js";
 import type { GraphV1 } from "../src/graph/types.js";
+import { cliExecArgs } from "./helpers.js";
 
 function repoWithDirs(): string {
   const d = mkdtempSync(join(tmpdir(), "graft-only-dir-"));
@@ -30,7 +31,7 @@ function repoWithDirs(): string {
 }
 
 function runCli(args: string[]): void {
-  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { stdio: "pipe" });
+  execFileSync(process.execPath, cliExecArgs(args), { stdio: "pipe" });
 }
 
 function graphOf(d: string): GraphV1 | null {
@@ -76,7 +77,7 @@ test("--only-dir rejects a prefix that normalizes to empty", () => {
   try {
     let failed = false;
     try {
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "build", d, "--only-dir", "/"], {
+      execFileSync(process.execPath, cliExecArgs(["build", d, "--only-dir", "/"]), {
         stdio: "pipe",
       });
     } catch {

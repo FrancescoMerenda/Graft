@@ -451,9 +451,10 @@ test("a process killed while holding the lock releases it", async (t) => {
   // `file://` URLs, not native paths: a dynamic `import("D:\\…\\state.ts")` fails on
   // Windows, where ESM reads the drive letter as a URL scheme.
   const mod = (rel: string) => JSON.stringify(new URL(rel, import.meta.url).href);
+  const childArgs = "bun" in process.versions ? ["-e"] : ["--import", "tsx", "-e"];
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", "-e",
+    [...childArgs,
       `const { acquireLockIn } = await import(${mod("../src/util/state.ts")});
        const { releaseOnSignal } = await import(${mod("../src/graph/refresh.ts")});
        const cache = process.argv[1];

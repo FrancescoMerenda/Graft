@@ -577,11 +577,11 @@ Two clones of PocketBase at the same commit: one wired with `graft init`, one un
 
 ```bash
 git clone https://github.com/NanoNets/context-graph-engine.git && cd context-graph-engine
-npm install
-npm run build
-npm test
+bun install
+bun run build
+bun test
 
-npm run cli -- build --deep .      # run the CLI from source
+bun run cli -- build --deep .      # run the CLI from source
 ```
 
 ---

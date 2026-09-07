@@ -43,16 +43,18 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p viewer/tsconfig.json && node scripts/build-viewer.mjs",
+    "build": "tsc -p tsconfig.json && tsc -p viewer/tsconfig.json && bun scripts/build-viewer.mjs",
     "dev": "tsc -p tsconfig.json --watch",
-    "cli": "tsx src/cli.ts",
-    "test": "node scripts/run-tests.mjs",
-    "prepare": "npm run build && node scripts/stamp-telemetry-key.mjs",
-    "prepublishOnly": "npm run build",
-    "postinstall": "node scripts/postinstall.mjs"
+    "cli": "bun src/cli.ts",
+    "test": "bun scripts/run-tests.mjs",
+    "prepare": "bun run build && bun scripts/stamp-telemetry-key.mjs",
+    "prepublishOnly": "bun run build",
+    "postinstall": "bun scripts/postinstall.mjs"
   },
+  "packageManager": "bun@1.4.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "bun": ">=1.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
@@ -101,5 +103,16 @@
     "tree-sitter-swift": {
       "tree-sitter": "$tree-sitter"
     }
-  }
+  },
+  "trustedDependencies": [
+    "tree-sitter",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-kotlin",
+    "tree-sitter-php",
+    "tree-sitter-python",
+    "tree-sitter-r",
+    "tree-sitter-swift",
+    "tree-sitter-typescript"
+  ]
 }

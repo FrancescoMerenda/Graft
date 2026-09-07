@@ -121,37 +121,42 @@ test("loadAskIndexCached: caches and invalidates the same way as the graph loade
 // This file pins the mtime-keyed load cache, so the pre-query auto-refresh —
 // which deliberately invalidates that cache after a rebuild — has to stay out of
 // the way. `graph-refresh.test.ts` covers the refresh itself.
-process.env.GRAFT_NO_REFRESH = "1";
-
 test("callTool: graft_trace_calls on the same dir twice doesn't reparse the graph", async () => {
-  const dir = fixtureDir();
-  mkdirSync(join(dir, "src"), { recursive: true });
-  writeFileSync(join(dir, "src", "math.ts"), "export function add() { return 1; }\n");
-  const graph: GraphV1 = {
-    version: 1,
-    // A real `buildGraph` always emits a `kind: "file"` node per source file;
-    // include one here too so `graft_trace_calls` with depth (a `resolveSymbol` +
-    // `edgeWalk` walk, the old `graft impact`) can resolve the filename-shaped
-    // query the way it would against a real build.
-    nodes: [
-      { ...node("src/math.ts#add"), path: "src/math.ts" },
-      { ...node("src/math.ts"), kind: "file", path: "src/math.ts", name: "math.ts", signature: null },
-    ],
-    edges: [],
-  } as GraphV1;
-  // graft_trace_calls reads through `contextDirFor(root)`, i.e. `<root>/graft`
-  // by default — write the graph there directly rather than round-tripping
-  // through a real `graft build`.
-  const outDir = join(dir, "graft");
-  mkdirSync(outDir, { recursive: true });
-  writeGraph(graph, outDir);
-  __resetParseCounts();
+  const prev = process.env.GRAFT_NO_REFRESH;
+  process.env.GRAFT_NO_REFRESH = "1";
+  try {
+    const dir = fixtureDir();
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "math.ts"), "export function add() { return 1; }\n");
+    const graph: GraphV1 = {
+      version: 1,
+      // A real `buildGraph` always emits a `kind: "file"` node per source file;
+      // include one here too so `graft_trace_calls` with depth (a `resolveSymbol` +
+      // `edgeWalk` walk, the old `graft impact`) can resolve the filename-shaped
+      // query the way it would against a real build.
+      nodes: [
+        { ...node("src/math.ts#add"), path: "src/math.ts" },
+        { ...node("src/math.ts"), kind: "file", path: "src/math.ts", name: "math.ts", signature: null },
+      ],
+      edges: [],
+    } as GraphV1;
+    // graft_trace_calls reads through `contextDirFor(root)`, i.e. `<root>/graft`
+    // by default — write the graph there directly rather than round-tripping
+    // through a real `graft build`.
+    const outDir = join(dir, "graft");
+    mkdirSync(outDir, { recursive: true });
+    writeGraph(graph, outDir);
+    __resetParseCounts();
 
-  const r1 = await callTool(dir, "graft_trace_calls", { symbol: "src/math.ts", depth: 2 });
-  assert.equal(r1.isError, false);
-  assert.equal(__parseCount.graph, 1);
+    const r1 = await callTool(dir, "graft_trace_calls", { symbol: "src/math.ts", depth: 2 });
+    assert.equal(r1.isError, false);
+    assert.equal(__parseCount.graph, 1);
 
-  const r2 = await callTool(dir, "graft_trace_calls", { symbol: "src/math.ts", depth: 2 });
-  assert.equal(r2.isError, false);
-  assert.equal(__parseCount.graph, 1, "second call on the same dir must not reparse");
+    const r2 = await callTool(dir, "graft_trace_calls", { symbol: "src/math.ts", depth: 2 });
+    assert.equal(r2.isError, false);
+    assert.equal(__parseCount.graph, 1, "second call on the same dir must not reparse");
+  } finally {
+    if (prev === undefined) delete process.env.GRAFT_NO_REFRESH;
+    else process.env.GRAFT_NO_REFRESH = prev;
+  }
 });

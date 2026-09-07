@@ -140,11 +140,10 @@ test("a direct call is not also recorded as a value reference, at scale (#116)",
   );
 
   const probe = join(dirname(fileURLToPath(import.meta.url)), "reference-scale-probe.ts");
-  const run = spawnSync(
-    process.execPath,
-    ["--max-semi-space-size=1", "--import", "tsx", probe, root],
-    { encoding: "utf8" },
-  );
+  const probeArgs = "bun" in process.versions
+    ? [probe, root]
+    : ["--max-semi-space-size=1", "--import", "tsx", probe, root];
+  const run = spawnSync(process.execPath, probeArgs, { encoding: "utf8" });
   assert.equal(run.status, 0, `probe failed:\n${run.stderr}`);
   const line = run.stdout.split("\n").find((l) => l.startsWith("__EDGES__"));
   assert.ok(line, `probe printed no edges:\n${run.stdout}\n${run.stderr}`);

@@ -297,3 +297,14 @@ test('the rendered row shows the label, a rule, and what is not collected', () =
   assert.equal(out.includes(TELEMETRY_ROW_ID), false, 'the internal id must never be shown');
   assert.match(out, /─/, 'a rule separates the settings from the agents');
 });
+
+test('renderPicker truncates row summaries to terminal columns when provided', () => {
+  const repo = fresh(); const home = fullHome();
+  const state = initialPickerState(planInit(repo, { home }), repo, home);
+  const out = renderPicker(state, true, 80);
+  for (const line of out.split('\n')) {
+    const plain = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+    assert.ok(plain.length <= 80, `line exceeds 80 columns: "${plain}"`);
+  }
+  assert.match(out, /…/);
+});

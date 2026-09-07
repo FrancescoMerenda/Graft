@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * `graft` CLI. Commands: build, ask, check, viz, mcp, callers, skeleton, grep,
  * map, init. Git is the sync: commit graft/ and a clone has the graph. A
@@ -1023,7 +1023,7 @@ program
     const graphs = (children.length ? children.map((c) => join(repo, c)) : [repo])
       .map((d) => loadGraphCached(contextDirFor(d, children.length ? undefined : globalDir)))
       .filter((g): g is NonNullable<typeof g> => g !== null);
-    console.error(
+    console.log(
       "\n" +
         formatInitEpilogue({
           graphBuilt: graphs.length > 0,
@@ -1063,25 +1063,28 @@ function wireTarget(
     const retracted = changed(
       runRetract(repo, { home, apply: true, global: opts.global, cache: false, exclude: ids }),
     ).filter((r) => r.action !== "skipped-unparseable");
-    for (const r of retracted) console.error(`- removed ${r.path} (${r.what}) — agent not selected`);
+    for (const r of retracted) console.log(`- removed ${r.path} (${r.what}) — agent not selected`);
+
+    const check = process.stdout.isTTY ? "\x1b[32m✓\x1b[0m" : "✓";
+    const warn = process.stderr.isTTY ? "\x1b[33m⚠\x1b[0m" : "⚠";
 
     if (wantClaude) {
       // `global`/`home` are threaded through alongside `statusline`: the claude layer
       // writes under `~/.claude` now (hosts/claude-global.ts), so --no-global has to
       // reach it or the flag would silently mean "no out-of-repo writes, except three".
       const res = runInit(repo, { build: opts.build, cliPath, statusline: wantStatusline, global: opts.global, home });
-      console.error(`✓ wrote ${res.settingsPath}`);
-      for (const s of res.shims) console.error(`✓ wrote ${s}`);
-      console.error(`✓ wrote ${res.skill}`);
+      console.log(`${check} wrote ${res.settingsPath}`);
+      for (const s of res.shims) console.log(`${check} wrote ${s}`);
+      console.log(`${check} wrote ${res.skill}`);
       if (res.mcp.action === "skipped-unparseable")
-        console.error(`⚠ .mcp.json: ${res.mcp.path} left unchanged (not valid JSON) — add the graft server manually`);
+        console.error(`${warn} .mcp.json: ${res.mcp.path} left unchanged (not valid JSON) — add the graft server manually`);
       else if (res.mcp.action === "unchanged")
-        console.error(`· mcp claude: ${res.mcp.path} (already registered)`);
+        console.log(`· mcp claude: ${res.mcp.path} (already registered)`);
       else
-        console.error(`✓ mcp claude: ${res.mcp.path} (${res.mcp.action}) — restart Claude Code to load the graft MCP server`);
-      console.error(res.built ? "✓ built the graph (graft build)" : "· skipped graph build");
-      if (!wantStatusline) console.error("· skipped Claude Code statusLine (--no-statusline)");
-      for (const w of res.warnings) console.error(`⚠ ${w}`);
+        console.log(`${check} mcp claude: ${res.mcp.path} (${res.mcp.action}) — restart Claude Code to load the graft MCP server`);
+      console.log(res.built ? `${check} built the graph (graft build)` : "· skipped graph build");
+      if (!wantStatusline) console.log("· skipped Claude Code statusLine (--no-statusline)");
+      for (const w of res.warnings) console.error(`${warn} ${w}`);
     }
 
     // `ids` is already resolved, so hosts init is always driven by an explicit
@@ -1095,12 +1098,12 @@ function wireTarget(
         hooks: opts.hooks,
         global: opts.global,
       });
-      for (const w of r.written) console.error(`✓ ${w.id}: ${w.path} (${w.action})`);
-      for (const m of r.mcp) console.error(`✓ mcp ${m.id}: ${m.path} (${m.action})`);
-      for (const h of r.hooks) console.error(`✓ hook ${h.id}: ${h.path} (${h.action})`);
+      for (const w of r.written) console.log(`${check} ${w.id}: ${w.path} (${w.action})`);
+      for (const m of r.mcp) console.log(`${check} mcp ${m.id}: ${m.path} (${m.action})`);
+      for (const h of r.hooks) console.log(`${check} hook ${h.id}: ${h.path} (${h.action})`);
       // Only worth saying when there was actually something out-of-repo to skip.
       if (opts.global === false && selectedWrites(plan, ids).some((w) => w.scope === "global"))
-        console.error("· skipped out-of-repo writes (--no-global)");
+        console.log("· skipped out-of-repo writes (--no-global)");
     }
 
     // Record WHICH graft wrote this repo's agent files, and under which flags.
@@ -1118,9 +1121,9 @@ function wireTarget(
     // Every host's wiring points at graft/, so the graph is built whatever was
     // selected — not only when Claude Code is in the list (runInit does its own).
     if (!wantClaude) {
-      console.error(
+      console.log(
         buildGraphIfMissing(repo, { build: opts.build, cliPath })
-          ? "✓ built the graph (graft build)"
+          ? `${check} built the graph (graft build)`
           : "· skipped graph build",
       );
     }
@@ -1173,21 +1176,26 @@ program
     const home = homedir();
     const common = { home, global: opts.global, cache: opts.keepCache ? false : true };
 
+    const check = process.stdout.isTTY ? "\x1b[32m✓\x1b[0m" : "✓";
+    const warn = process.stderr.isTTY ? "\x1b[33m⚠\x1b[0m" : "⚠";
+
     if (!opts.yes) {
-      console.error(formatRetractions(planRetract(repo, common), false));
-      console.error("\nDry run — nothing was touched. Re-run with -y to remove.");
+      console.log(formatRetractions(planRetract(repo, common), false));
+      console.log("\nDry run — nothing was touched. Re-run with -y to remove.");
       if (opts.global !== false)
-        console.error("Entries marked [machine-wide] affect every project; --no-global skips them.");
+        console.log("Entries marked [machine-wide] affect every project; --no-global skips them.");
       return;
     }
     const done = runRetract(repo, { ...common, apply: true });
-    console.error(formatRetractions(done, true));
+    console.log(formatRetractions(done, true));
     const bad = changed(done).filter((r) => r.action === "skipped-unparseable");
-    console.error(
-      bad.length
-        ? `\n⚠ ${bad.length} file(s) could not be parsed and were left as-is — see above.`
-        : "\n✓ graft fully removed. `graft init` re-wires from scratch.",
-    );
+    if (bad.length) {
+      console.error(
+        `\n${warn} ${bad.length} file(s) could not be parsed and were left as-is — see above.`,
+      );
+    } else {
+      console.log(`\n${check} graft fully removed. \`graft init\` re-wires from scratch.`);
+    }
   });
 
 program.parseAsync().catch((err) => {

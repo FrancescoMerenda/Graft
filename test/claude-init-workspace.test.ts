@@ -36,7 +36,8 @@ function workspace(tag: string): string {
 
 /** The CLI in a chosen cwd — `runCli` always runs in the project dir, and cwd is the point here. */
 function cliIn(cwd: string, args: string[], home: string) {
-  return spawnSync(process.execPath, ["--import", TSX, CLI, ...args], {
+  const execArgs = "bun" in process.versions ? [CLI, ...args] : ["--import", TSX, CLI, ...args];
+  return spawnSync(process.execPath, execArgs, {
     cwd,
     encoding: "utf8",
     timeout: 120_000,

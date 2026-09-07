@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { TOOLS, callTool, canonicalToolName } from '../src/mcp/tools.js';
+import { cliExecArgs } from './helpers.js';
 
 function builtRepo(): string {
   const d = mkdtempSync(join(tmpdir(), 'graft-mcptools-'));
   mkdirSync(join(d, 'src'), { recursive: true });
   writeFileSync(join(d, 'src', 'math.ts'),
     'export function add(a: number, b: number): number {\n  return a + b;\n}\nexport function sub(a: number, b: number): number {\n  return add(a, -b);\n}\n');
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
@@ -28,7 +29,7 @@ function chainRepo(): string {
       'export function sub(a: number, b: number): number {\n  return add(a, -b);\n}\n' +
       'export function compute(a: number, b: number): number {\n  return sub(a, b);\n}\n',
   );
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
@@ -40,7 +41,7 @@ function customDirRepo(): { repo: string; graphDir: string } {
   writeFileSync(join(d, 'src', 'math.ts'),
     'export function add(a: number, b: number): number {\n  return a + b;\n}\nexport function sub(a: number, b: number): number {\n  return add(a, -b);\n}\n');
   const graphDir = join(d, 'customgraph');
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d, '--dir', graphDir], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d, '--dir', graphDir]), { stdio: 'pipe' });
   return { repo: d, graphDir };
 }
 
@@ -55,7 +56,7 @@ function fileScopeRepo(): string {
     join(d, 'src', 'b.ts'),
     "import { helper } from './a';\n\nexport function useB(): number {\n  return helper();\n}\n",
   );
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
@@ -68,7 +69,7 @@ function multiDirRepo(): string {
     mkdirSync(join(d, dir), { recursive: true });
     writeFileSync(join(d, dir, 'x.ts'), `export function ${dir}Fn(): number {\n  return 1;\n}\n`);
   }
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
   return d;
 }
 
