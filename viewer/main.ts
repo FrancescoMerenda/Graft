@@ -41,10 +41,15 @@ const tools = {
   /** Which kind of relation is on screen: what the code does, or how the tree is
    * assembled. See `setLayer`. */
   layer: "code" as Layer | "all",
+  /** Set once the reader picks a layer themselves, after which the default below
+   * stops overriding it. */
+  layerPinned: false,
   shown: null as VizGraph | null,
   adjacency: null as Adjacency | null,
   /** Set when `path` is waiting for its second endpoint. */
   pathFrom: null as string | null,
+  /** What the orbit layout hangs off, set by ctrl-clicking a node. */
+  orbitRoot: undefined as string | undefined,
 };
 
 /** Past this, an ungrouped force layout is a dot cloud rather than a diagram, so
@@ -200,6 +205,27 @@ function showDetail(id: string | null): void {
 }
 
 view.onSelect = (id) => { if (!maybeCompletePath(id)) showDetail(id); };
+
+/**
+ * Ctrl/⌘-click: hang the whole graph off this node.
+ *
+ * A plain click rings a node's own neighbours, which answers "what does THIS
+ * touch". The question after that is "and what do those touch" — one modifier
+ * away rather than behind a mode nobody would think to switch to, because the
+ * node you want at the centre is the one already under the pointer.
+ */
+view.onOrbit = (id) => {
+  tools.orbitRoot = id;
+  tools.layout = "orbit";
+  ($("layoutSel") as HTMLSelectElement).value = "orbit";
+  // Selected, but NOT arranged: the orbit tree is about to place this node's
+  // children around it, and ringing them would undo that on the spot.
+  view.select(id, { arrange: false });
+  // Re-lay in place rather than through `applyTools`, which rebuilds the dataset
+  // and makes the new arrangement arrive rather than travel. Falls back to the
+  // rebuild if the layout cannot be computed at all.
+  if (!view.orbitTo(id)) applyTools();
+};
 
 /**
  * What actually makes two things relate.
@@ -426,7 +452,7 @@ function applyTools(): void {
   }
 
   view.setData(shown, graphTab());
-  const positions = staticLayout(tools.layout, shown, tools.depth || 2, view.radii);
+  const positions = staticLayout(tools.layout, shown, tools.depth || 2, view.radii, tools.orbitRoot);
   if (positions) view.useStaticPositions(positions);
   else view.reheat();
   view.resetView();
@@ -434,7 +460,7 @@ function applyTools(): void {
   renderGroupOptions(raw);
   ($("layoutSel") as HTMLSelectElement).value = tools.layout;
   renderCrumbs();
-  setLayer(tools.layer);
+  setLayer(tools.layerPinned ? tools.layer : defaultLayer());
   renderChips();
   renderLegend();
   updateShownCount();
@@ -579,6 +605,19 @@ $("orphanChip").addEventListener("click", () => {
  * under a wall of include lines and neither could be read. Nothing here is
  * language-specific: it keys on the relation graft already emits.
  */
+/**
+ * The layer to start a view on, until the reader says otherwise.
+ *
+ * Rolled up, a module's dependencies are mostly its INCLUDES — that is what one
+ * C++ component using another looks like — so defaulting to the code layer left
+ * heavily-used modules with no inbound edges at all: elmSql, included by fifteen
+ * others, drew as an island. Drilled down to symbols the opposite holds, and the
+ * include wall is what buries the calls. So the default follows the altitude.
+ */
+function defaultLayer(): Layer | "all" {
+  return tools.depth > 0 ? "all" : "code";
+}
+
 function setLayer(layer: Layer | "all"): void {
   const graph = activeGraph();
   if (!graph) return;
@@ -598,7 +637,10 @@ function setLayer(layer: Layer | "all"): void {
 }
 
 for (const b of document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
-  b.addEventListener("click", () => setLayer(b.dataset.layer as Layer | "all"));
+  b.addEventListener("click", () => {
+    tools.layerPinned = true;
+    setLayer(b.dataset.layer as Layer | "all");
+  });
 }
 
 $("cyclesBtn").addEventListener("click", () => {
@@ -694,5 +736,16 @@ onServerChange(() => {
     if (selected) { view.selected = selected; view.restyle(); showDetail(selected); }
   });
 });
+
+/**
+ * A handle on the live view, for driving the page from outside it.
+ *
+ * The canvas has no DOM to inspect: everything a reader sees is one bitmap, so
+ * "is the ring too far out" cannot be answered by reading elements the way it
+ * could on an SVG or HTML tree. This hook is how a headless browser measures
+ * what was actually drawn — the same thing the reader is looking at, in world
+ * coordinates — instead of the numbers a formula was supposed to produce.
+ */
+(globalThis as unknown as { __graft?: unknown }).__graft = { view, tools };
 
 void loadAll();

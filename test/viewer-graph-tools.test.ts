@@ -220,8 +220,13 @@ test("group labels take the last segment, and more of it only when they clash", 
     "CMU_LIBS/elmSnmp/snmp",
     "web/snmp",
     "headers",
+    // Enough siblings that `CMU_LIBS` reads as a container rather than a place —
+    // that is what earns the short label, not the name.
+    "CMU_LIBS/elmRfl",
+    "CMU_LIBS/elmDbus",
+    "CMU_LIBS/elmSip",
   ]);
-  // Unique tails stay short.
+  // Unique tails stay short, once their parent holds enough to be a container.
   assert.equal(l.get("CMU_LIBS/elmMcl"), "elmMcl");
   assert.equal(l.get("headers"), "headers");
   // Two groups ending in `snmp` each take one more segment — and only those two.
@@ -407,4 +412,58 @@ test("radialTreeSeed puts the root at the centre and each layer on its own ring"
   assert.ok(at("f.c#deep") > at("f.c#a"), "deeper means further out");
   // Nothing reaches `island`, so it rings the outside rather than vanishing.
   assert.ok(at("f.c#island") > at("f.c#deep"), "unreachable nodes go outermost");
+});
+
+test("a directory named after the language it holds is not an identity", async () => {
+  const { transparentDirs, groupKeyOf } = await import("../viewer/aggregate.js");
+  // `qmlSources/jS/*.js` drew a bubble labelled "jS": a folder named after the
+  // language its files are written in sorts by file type, exactly like `headers`.
+  // Derived from the tree, not from a list of words — the same folder holding
+  // something else entirely would be somebody's module and is left alone.
+  const graph: VizGraph = {
+    meta: { nodeCount: 4, edgeCount: 0 },
+    nodes: [
+      node("a", "qmlSources/jS/helper.js"),
+      node("b", "qmlSources/jS/util.js"),
+      node("c", "libs/go/router.ts"),
+      node("d", "CMU_LIBS/elmMclUa/sources/call.cpp"),
+    ],
+    edges: [],
+  };
+  const t = transparentDirs(graph);
+  assert.equal(groupKeyOf("qmlSources/jS/helper.js", 2, t), "qmlSources");
+  // `libs/go` holds TypeScript, so it is a module called "go", not a language folder.
+  assert.equal(groupKeyOf("libs/go/router.ts", 2, t), "libs/go");
+  // A real component keeps its name, however deep.
+  assert.equal(groupKeyOf("CMU_LIBS/elmMclUa/sources/call.cpp", 2, t), "CMU_LIBS/elmMclUa");
+});
+
+test("a module whose only child is a role directory survives", async () => {
+  const { transparentDirs, groupKeyOf } = await import("../viewer/aggregate.js");
+  // `CMU_LIBS/elmModels/headers/*` has one child and no files of its own — the
+  // same shape as a filler folder, and a structural rule that collapsed it
+  // dissolved a real module into its parent.
+  const graph: VizGraph = {
+    meta: { nodeCount: 2, edgeCount: 0 },
+    nodes: [node("a", "CMU_LIBS/elmModels/headers/model.h"), node("b", "CMU_LIBS/elmMcl/sources/mcl.cpp")],
+    edges: [],
+  };
+  const t = transparentDirs(graph);
+  assert.equal(groupKeyOf("CMU_LIBS/elmModels/headers/model.h", 2, t), "CMU_LIBS/elmModels");
+});
+
+test("group labels keep a parent that says something and drop one that does not", async () => {
+  const { labelsFor } = await import("../viewer/aggregate.js");
+  // `CMU_LIBS` holds every module, so naming it adds a word they all share;
+  // `web` holds two, so it is the only thing that tells them apart from each
+  // other. The rule is how many groups the parent holds — no list of filler
+  // names, so a repo's own invented folder gets this right too.
+  const l = labelsFor([
+    "web/project", "web/routes",
+    "CMU_LIBS/elmMcl", "CMU_LIBS/elmSnmp", "CMU_LIBS/elmRfl", "CMU_LIBS/elmDbus", "CMU_LIBS/elmSip",
+  ]);
+  assert.equal(l.get("web/project"), "web/project");
+  assert.equal(l.get("web/routes"), "web/routes");
+  assert.equal(l.get("CMU_LIBS/elmMcl"), "elmMcl");
+  assert.equal(l.get("CMU_LIBS/elmSnmp"), "elmSnmp");
 });

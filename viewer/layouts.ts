@@ -15,7 +15,7 @@
 import type { VizGraph, VizNode } from "./data.js";
 import { pathOf, significantDirs } from "./aggregate.js";
 
-export type LayoutMode = "tree" | "force" | "radial" | "layered";
+export type LayoutMode = "tree" | "orbit" | "force" | "radial" | "layered";
 
 /** Comfortable spacing in world units; the view fits itself to whatever comes out. */
 const LAYER_GAP = 220;
@@ -40,6 +40,22 @@ const SEED_DEPTH = 2;
 
 /** Gap between neighbours on a ring, and between rings, in world units. */
 const RING_PAD = 26;
+
+/** Breathing room around each subtree disc, and how much of the circle a node's
+ * children may use — the rest is left facing its own parent, so a ring never
+ * closes over the branch it grew from. */
+const ORBIT_PAD = 9;
+/**
+ * Half the circle, so a node's descendants stay strictly on the far side of it
+ * from its own parent.
+ *
+ * Wider looks airier and costs far more than it looks: at 1.55π a subtree wraps
+ * back past its parent, so every ring had to clear the whole of the widest
+ * child's subtree — a cost that compounds at each level, and put nodes 6,700
+ * units from the root on one real repo. Confined to a half-plane, a ring only has
+ * to clear the child ITSELF, and depth stops multiplying.
+ */
+const ORBIT_SPAN = Math.PI;
 
 /** The golden angle. Successive points at this angle never line up into spokes,
  * which is what makes a sunflower spiral look evenly filled at any count. */
@@ -255,16 +271,73 @@ export function seedPositions(
 
   const cx = width / 2;
   const cy = height / 2;
+  // Clusters are placed by PACKING, not by spreading points evenly: a sunflower
+  // assumes every point is the same size, and a grouped graph is the opposite of
+  // that — one 7,000-symbol bubble beside forty small ones. Sized discs laid on
+  // the spiral in descending order start out touching instead of overlapping,
+  // which is the difference between a picture that is readable on arrival and one
+  // the forces have to unpile first.
+  const placed = packDiscs(keys.map((k) => clusterRadius.get(k)! + RING_PAD), outer);
   keys.forEach((key, gi) => {
-    const [gx, gy] = keys.length === 1 ? [0, 0] : sunflower(gi, keys.length, outer);
+    const [gx, gy] = placed[gi];
     const members = clusters.get(key)!;
     const R = clusterRadius.get(key)!;
+    const inner = packDiscs(members.map((i) => radii[i] + RING_PAD / 2), R);
     members.forEach((idx, j) => {
-      const [mx, my] = members.length === 1 ? [0, 0] : sunflower(j, members.length, R);
+      const [mx, my] = inner[j];
       out[idx * 2] = cx + gx + mx;
       out[idx * 2 + 1] = cy + gy + my;
     });
   });
+  return out;
+}
+
+/**
+ * Lay out discs of the given radii around the origin so that none overlaps.
+ *
+ * Biggest first onto an Archimedean spiral, each one advanced until it clears
+ * everything already placed. Greedy and O(n·k) with a small k because the spiral
+ * only ever has to step past the neighbours it just laid down — and unlike a
+ * density formula it is *checked*, so the guarantee holds for any mix of sizes
+ * rather than on average.
+ *
+ * `hint` only sets the spiral's pitch: the result grows to whatever the contents
+ * actually need.
+ */
+function packDiscs(radii: number[], hint: number): [number, number][] {
+  const order = radii.map((r, i) => i).sort((a, b) => radii[b] - radii[a]);
+  const out: [number, number][] = radii.map(() => [0, 0]);
+  const done: { x: number; y: number; r: number }[] = [];
+  // Pitch: how much the spiral's radius grows per turn. Tied to the typical disc
+  // so a crowd of equal circles lands on neat rings.
+  const pitch = Math.max(hint / 6, Math.max(...radii, 1) * 1.6);
+
+  for (const i of order) {
+    const r = radii[i];
+    if (done.length === 0) { out[i] = [0, 0]; done.push({ x: 0, y: 0, r }); continue; }
+    let angle = done.length * GOLDEN_ANGLE;
+    let placed = false;
+    // Walk outward along the spiral until the disc fits. The bound is generous
+    // and never reached in practice; it exists so a pathological input degrades
+    // to "slightly overlapping" rather than to a hung frame.
+    for (let step = 0; step < 4000 && !placed; step++) {
+      angle += 0.35;
+      const radius = (pitch * angle) / (Math.PI * 2);
+      const x = Math.cos(angle) * radius;
+      const y = Math.sin(angle) * radius;
+      let clear = true;
+      for (const d of done) {
+        const dx = x - d.x, dy = y - d.y;
+        if (dx * dx + dy * dy < (r + d.r) * (r + d.r)) { clear = false; break; }
+      }
+      if (clear) { out[i] = [x, y]; done.push({ x, y, r }); placed = true; }
+    }
+    if (!placed) {
+      const radius = (pitch * angle) / (Math.PI * 2);
+      out[i] = [Math.cos(angle) * radius, Math.sin(angle) * radius];
+      done.push({ x: out[i][0], y: out[i][1], r });
+    }
+  }
   return out;
 }
 
@@ -275,7 +348,7 @@ export function seedPositions(
  * "grouped" and "radial, ungrouped" keeps things in the same place on screen —
  * a directory that was a bubble becomes a ring where the bubble was.
  */
-export function radialLayout(nodes: VizNode[], depth = 2): Float32Array {
+export function radialLayout(nodes: VizNode[], depth = 2, radii?: Float32Array): Float32Array {
   const groups = new Map<string, VizNode[]>();
   for (const n of nodes) {
     const key = significantDirs(pathOf(n)).slice(0, depth).join("/") || "·";
@@ -288,24 +361,37 @@ export function radialLayout(nodes: VizNode[], depth = 2): Float32Array {
   const out = new Float32Array(nodes.length * 2);
   const keys = [...groups.keys()].sort();
 
-  // Each ring's radius is whatever its own members need at NODE_GAP spacing, and
-  // the circle the rings sit on is big enough for the largest of them — so one
-  // 1,200-symbol directory can no longer swallow its neighbours.
+  // Every distance here is measured in the space a node actually occupies. A
+  // constant slot width assumes every node is the same size, and on a grouped
+  // graph — where one bubble stands for 7,000 symbols and its neighbour for
+  // twelve — that assumption is how two rings ended up drawn through each other.
+  const roomOf = (n: VizNode): number => (radii ? radii[order.get(n.id)!] : NODE_GAP / 2);
+  const slot = (n: VizNode): number => (roomOf(n) + RING_PAD) * 2;
+
   const ringRadius = new Map<string, number>();
   for (const key of keys) {
-    ringRadius.set(key, Math.max(NODE_GAP, (groups.get(key)!.length * NODE_GAP) / (Math.PI * 2)));
+    const members = groups.get(key)!;
+    const need = members.reduce((sum, n) => sum + slot(n), 0);
+    const widestMember = Math.max(...members.map(roomOf));
+    // One member sits at the centre of its own ring; two or more need a circle
+    // whose circumference holds them all side by side.
+    ringRadius.set(key, members.length === 1 ? 0 : Math.max(widestMember, need / (Math.PI * 2)));
   }
-  const widest = Math.max(...ringRadius.values());
-  const outer = Math.max(widest * 2, (keys.length * widest * 2.2) / (Math.PI * 2));
+  // Each ring's own footprint is its radius plus its biggest member, so the rings
+  // are packed as discs of that size rather than as points on a circle.
+  const footprint = keys.map((key) =>
+    ringRadius.get(key)! + Math.max(...groups.get(key)!.map(roomOf)) + RING_PAD);
+  const centres = packDiscs(footprint, Math.max(...footprint) * 4);
 
   keys.forEach((key, gi) => {
     const members = groups.get(key)!;
-    const angle = (gi / keys.length) * Math.PI * 2;
-    const cx = Math.cos(angle) * outer;
-    const cy = Math.sin(angle) * outer;
+    const [cx, cy] = centres[gi];
     const r = ringRadius.get(key)!;
-    members.forEach((n, i) => {
-      const a = (i / members.length) * Math.PI * 2;
+    const need = members.reduce((sum, n) => sum + slot(n), 0);
+    let walked = 0;
+    members.forEach((n) => {
+      const a = ((walked + slot(n) / 2) / need) * Math.PI * 2;
+      walked += slot(n);
       const at = order.get(n.id)!;
       out[at * 2] = cx + Math.cos(a) * r;
       out[at * 2 + 1] = cy + Math.sin(a) * r;
@@ -323,7 +409,7 @@ export function radialLayout(nodes: VizNode[], depth = 2): Float32Array {
  * is reported properly by `findCycles` in ./analysis.ts, which is where that
  * belongs.
  */
-export function layeredLayout(graph: VizGraph, nodes: VizNode[]): Float32Array {
+export function layeredLayout(graph: VizGraph, nodes: VizNode[], radii?: Float32Array): Float32Array {
   const index = new Map(nodes.map((n, i) => [n.id, i]));
   const incoming: number[][] = nodes.map(() => []);
   for (const e of graph.edges) {
@@ -360,19 +446,173 @@ export function layeredLayout(graph: VizGraph, nodes: VizNode[]): Float32Array {
     }
   }
 
+  // Walk each layer along X by what its nodes actually occupy, not by a constant
+  // slot: a rolled-up bubble is several times the width of a lone function, and a
+  // fixed pitch overlaps them for exactly the nodes that matter most.
+  const room = (i: number): number => (radii ? radii[i] : NODE_GAP / 2);
   const perLayer = new Map<number, number>();
   const out = new Float32Array(nodes.length * 2);
+  const rowHeight = new Map<number, number>();
   for (let i = 0; i < nodes.length; i++) {
     const layer = depth[i];
-    const slot = perLayer.get(layer) ?? 0;
-    perLayer.set(layer, slot + 1);
-    out[i * 2] = slot * NODE_GAP;
-    out[i * 2 + 1] = layer * LAYER_GAP;
+    const walked = perLayer.get(layer) ?? 0;
+    const w = (room(i) + RING_PAD) * 2;
+    perLayer.set(layer, walked + w);
+    rowHeight.set(layer, Math.max(rowHeight.get(layer) ?? 0, room(i)));
+    out[i * 2] = walked + w / 2;
+    out[i * 2 + 1] = layer;
   }
+  // Rows are stacked by what they hold, so a row of big bubbles cannot run into
+  // the row beneath it. The first row still sits at y=0: depth is the thing this
+  // layout exists to show, and "the roots are at zero" is what makes a Y
+  // coordinate readable as a depth at all.
+  const rowY = new Map<number, number>();
+  let y = 0;
+  let previousHeight = 0;
+  for (const layer of [...rowHeight.keys()].sort((a, b) => a - b)) {
+    const h = rowHeight.get(layer)!;
+    if (rowY.size > 0) y += previousHeight + h + LAYER_GAP;
+    rowY.set(layer, y);
+    previousHeight = h;
+  }
+  for (let i = 0; i < nodes.length; i++) out[i * 2 + 1] = rowY.get(depth[i]) ?? 0;
   // Centre each layer on x=0 so the result reads as a tree rather than a staircase.
-  const widths = new Map([...perLayer].map(([layer, n]) => [layer, ((n - 1) * NODE_GAP) / 2]));
+  const widths = new Map([...perLayer].map(([layer, w]) => [layer, w / 2]));
   for (let i = 0; i < nodes.length; i++) out[i * 2] -= widths.get(depth[i]) ?? 0;
   return out;
+}
+
+/**
+ * A tree of circles: every node's children ring the node itself, recursively.
+ *
+ * `tree` puts each BFS level on one global circle, which answers "how far is this
+ * from the entry point" and nothing else — at depth three, forty nodes from a
+ * dozen unrelated parents are interleaved on the same ring and no subtree reads
+ * as a thing. Here each node owns a disc: its children sit on a ring around IT,
+ * and each of those children owns a smaller disc of its own, all the way down. A
+ * subtree is then a shape you can point at, and its size on screen is how much
+ * hangs off it.
+ *
+ * Non-overlap is by construction rather than by tuning. Every subtree is measured
+ * bottom-up as a disc, and siblings are placed on a circle whose circumference
+ * holds those discs side by side — an arc is never shorter than the chord it
+ * subtends, so discs that fit around the circle cannot reach each other. The
+ * wedge facing a node's own parent is left empty, so a child ring never closes
+ * over the branch it grew from.
+ */
+export function orbitLayout(
+  graph: VizGraph, nodes: VizNode[], radii: Float32Array, rootId: string,
+): Float32Array | null {
+  const index = new Map(nodes.map((n, i) => [n.id, i]));
+  const root = index.get(rootId);
+  if (root === undefined) return null;
+
+  // The spanning tree: outgoing edges first, so "what this depends on" is what
+  // hangs below a node wherever the graph allows a choice.
+  const out: number[][] = nodes.map(() => []);
+  const both: number[][] = nodes.map(() => []);
+  for (const e of graph.edges) {
+    const a = index.get(e.source);
+    const b = index.get(e.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    out[a].push(b);
+    both[a].push(b);
+    both[b].push(a);
+  }
+  const kids: number[][] = nodes.map(() => []);
+  const seen = new Uint8Array(nodes.length);
+  seen[root] = 1;
+  const grow = (adjacency: number[][]): void => {
+    let frontier = [root];
+    while (frontier.length > 0) {
+      const next: number[] = [];
+      for (const v of frontier) {
+        for (const w of adjacency[v]) {
+          if (seen[w]) continue;
+          seen[w] = 1;
+          kids[v].push(w);
+          next.push(w);
+        }
+      }
+      frontier = next;
+    }
+  };
+  grow(out);
+  grow(both);
+
+  // Anything the edges never reach is still part of the picture: hang it off the
+  // root rather than leaving it stacked at the origin.
+  const orphans: number[] = [];
+  for (let i = 0; i < nodes.length; i++) if (!seen[i]) { seen[i] = 1; orphans.push(i); }
+  kids[root].push(...orphans);
+
+  const room = (i: number): number => radii[i];
+  // Bottom-up: the radius of the disc each subtree needs, and the ring its own
+  // children sit on. Iterative post-order — a deep chain must not blow the stack.
+  const disc = new Float64Array(nodes.length);
+  const ring = new Float64Array(nodes.length);
+  const order: number[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const v = stack.pop()!;
+    order.push(v);
+    for (const w of kids[v]) stack.push(w);
+  }
+  // One ring per node, with each child given the ARC its whole subtree needs but
+  // placed at a radius that only has to clear the child ITSELF.
+  //
+  // Those are two different quantities and conflating them is what made this
+  // sprawl: sizing the radius by the widest child's entire subtree compounded at
+  // every level and threw nodes 6,700 units out on a real repo. Sizing the arc by
+  // the subtree is what stops two siblings' descendants meeting, so that part
+  // stays. Splitting leaves onto a ring of their own was tried and is worse: a
+  // leaf then sits directly under a branch sibling and reads as belonging to it.
+  const widthOf = (i: number): number => ((kids[i].length === 0 ? room(i) : disc[i]) + ORBIT_PAD) * 2;
+
+  for (let k = order.length - 1; k >= 0; k--) {
+    const v = order[k];
+    if (kids[v].length === 0) { disc[v] = room(v); continue; }
+    const span = v === root ? Math.PI * 2 : ORBIT_SPAN;
+    let need = 0;
+    let widestNode = 0;
+    let widestDisc = 0;
+    for (const w of kids[v]) {
+      need += widthOf(w);
+      widestNode = Math.max(widestNode, room(w));
+      widestDisc = Math.max(widestDisc, disc[w]);
+    }
+    ring[v] = Math.max(room(v) + widestNode + ORBIT_PAD, need / span);
+    // The disc is what the GRANDPARENT budgets arc for, so it stays the honest
+    // outer extent: the ring plus the largest subtree hanging off it.
+    disc[v] = ring[v] + widestDisc + ORBIT_PAD;
+  }
+
+  const pos = new Float32Array(nodes.length * 2);
+  // Iterative pre-order placement, each node told which way its parent lies so it
+  // can grow away from it.
+  const work: { v: number; x: number; y: number; away: number }[] = [{ v: root, x: 0, y: 0, away: 0 }];
+  while (work.length > 0) {
+    const { v, x, y, away } = work.pop()!;
+    pos[v * 2] = x;
+    pos[v * 2 + 1] = y;
+    if (kids[v].length === 0) continue;
+    const span = v === root ? Math.PI * 2 : ORBIT_SPAN;
+    const need = kids[v].reduce((n, w) => n + widthOf(w), 0);
+    // Biggest subtree in the middle of the wedge, the rest alternating outward, so
+    // a node's weight sits under it rather than trailing off one side. Ties break
+    // on discovery order, so two runs of the same repo draw the same picture.
+    const bySize = [...kids[v]].sort((a, b) => widthOf(b) - widthOf(a));
+    const balanced: number[] = [];
+    bySize.forEach((w, i) => (i % 2 === 0 ? balanced.push(w) : balanced.unshift(w)));
+    let walked = 0;
+    for (const w of balanced) {
+      const width = widthOf(w);
+      const angle = away - span / 2 + ((walked + width / 2) / need) * span;
+      walked += width;
+      work.push({ v: w, x: x + Math.cos(angle) * ring[v], y: y + Math.sin(angle) * ring[v], away: angle });
+    }
+  }
+  return pos;
 }
 
 /**
@@ -383,10 +623,17 @@ export function layeredLayout(graph: VizGraph, nodes: VizNode[]): Float32Array {
  * so a reader who wants the ordering has to be able to say so and keep it.
  */
 export function staticLayout(
-  mode: LayoutMode, graph: VizGraph, depth: number, radii: Float32Array,
+  mode: LayoutMode, graph: VizGraph, depth: number, radii: Float32Array, orbitRoot?: string,
 ): Float32Array | null {
-  if (mode === "radial") return radialLayout(graph.nodes, Math.max(1, depth || 2));
-  if (mode === "layered") return layeredLayout(graph, graph.nodes);
+  if (mode === "orbit") {
+    // Whatever the reader ctrl-clicked, if it is still on screen: re-rooting is
+    // the whole point of the mode, and falling back to the entry point silently
+    // would answer a different question than the one they asked.
+    const root = (orbitRoot && graph.nodes.some((n) => n.id === orbitRoot) ? orbitRoot : null) ?? findRoot(graph);
+    return root ? orbitLayout(graph, graph.nodes, radii, root) : null;
+  }
+  if (mode === "radial") return radialLayout(graph.nodes, Math.max(1, depth || 2), radii);
+  if (mode === "layered") return layeredLayout(graph, graph.nodes, radii);
   if (mode === "tree") {
     const root = findRoot(graph);
     return root ? radialTreeSeed(graph, radii, 1200, 900, root) : null;

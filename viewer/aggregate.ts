@@ -14,6 +14,10 @@
  */
 import type { VizGraph, VizNode, VizEdge } from "./data.js";
 
+/** How many groups a directory must hold before it reads as a container rather
+ * than as a place — see the label pass in {@link labelsFor}. */
+const CONTAINER_FAMILY = 4;
+
 /** Symbol pairs kept verbatim on a bundle before the count takes over. */
 const MAX_BUNDLE_MEMBERS = 40;
 
@@ -35,36 +39,108 @@ export function pathOf(node: VizNode): string {
 }
 
 /**
- * Directory names that describe a FILE TYPE rather than a component.
+ * Directory names that describe a FILE'S ROLE rather than a component.
  *
  * `CMU_LIBS/elmMcl/headers` and `CMU_LIBS/elmMcl/sources` are one module split by
  * language convention, not two modules — grouping by them halves every module and
- * puts its declarations in a different bubble from its definitions. Worse, every
- * submodule has both, so the top level of a C++ tree ends up with bubbles called
- * `headers` and `sources` that mean nothing at all.
+ * puts its declarations in a different bubble from its definitions.
  *
- * Recognised rather than inferred. A frequency heuristic ("a name under many
- * parents is a convention") gets this right on a repo with fifty submodules and
- * badly wrong on one with three, and a viewer that regroups differently depending
- * on repo size is worse than one that is occasionally too literal.
+ * This list is the part that cannot be derived: these words are conventions of
+ * the wider programming culture, not facts about any one repo. Everything else a
+ * grouping should ignore is worked out from the tree itself — see
+ * {@link transparentDirs}, which is what keeps this list from having to grow a
+ * new entry every time a repo invents a folder that means nothing.
  */
-const FILE_TYPE_DIRS = new Set([
+const ROLE_NAMES = new Set([
   "src", "source", "sources", "lib",
   "include", "includes", "inc", "header", "headers",
   "impl", "internal", "private", "public", "detail",
 ]);
+
+/** Extension → the directory names that would be naming that same language. */
+const LANGUAGE_DIRS = new Set([
+  "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "py", "rb", "go", "rs",
+  "java", "kt", "swift", "php", "cs", "lua", "dart", "cpp", "cc", "cxx", "hpp",
+  "h", "c", "css", "scss", "sass", "less", "html", "qml", "sh", "sql", "json",
+  "javascript", "typescript", "python", "ruby", "golang", "rust", "kotlin",
+]);
+
+/**
+ * Directories that carry no identity — worked out from the repo's own tree.
+ *
+ * A hardcoded list of names is the wrong shape for this: it says `sources` is a
+ * convention everywhere and says nothing about the folder a particular project
+ * invented. Two rules cover the rest, and both are properties of the tree rather
+ * than of any vocabulary:
+ *
+ *   - A directory NAMED AFTER A LANGUAGE that holds files of that language sorts
+ *     by what its files are written in, which is the same kind of fact as
+ *     `headers`. `qmlSources/jS` full of `.js` is a file-type folder wearing a
+ *     different word. A directory called `go` holding no Go is somebody's module
+ *     and is left alone.
+ **
+ * Keyed by full path, not by name, so a `scripts/` that really does hold a repo's
+ * build scripts stays a component while a `scripts/` that is one empty step in a
+ * chain does not.
+ */
+export function transparentDirs(graph: VizGraph): Set<string> {
+  interface Dir { children: Set<string>; files: number; exts: Set<string> }
+  const dirs = new Map<string, Dir>();
+  const dirAt = (key: string): Dir => {
+    let d = dirs.get(key);
+    if (!d) dirs.set(key, (d = { children: new Set(), files: 0, exts: new Set() }));
+    return d;
+  };
+
+  for (const n of graph.nodes) {
+    const path = pathOf(n);
+    if (!path) continue;
+    const parts = path.split("/");
+    const ext = parts[parts.length - 1].split(".").pop()?.toLowerCase() ?? "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      const key = parts.slice(0, i + 1).join("/");
+      const dir = dirAt(key);
+      dir.exts.add(ext);
+      if (i === parts.length - 2) dir.files++;
+      else dir.children.add(parts.slice(0, i + 2).join("/"));
+    }
+  }
+
+  const out = new Set<string>();
+  for (const [key, dir] of dirs) {
+    const name = key.slice(key.lastIndexOf("/") + 1).toLowerCase();
+    // A "one child, no files of its own" rule was tried here too and is wrong: a
+    // real module whose only child is `headers/` has exactly that shape, and it
+    // dissolved `CMU_LIBS/elmModels` into its parent. Structure alone cannot tell
+    // a module from a filler folder — what a filler folder actually costs is a
+    // LABEL nobody can place, and that is fixed where labels are made.
+    if (LANGUAGE_DIRS.has(name) && dir.exts.has(name)) out.add(key);
+  }
+  return out;
+}
 
 /**
  * Path segments that carry identity: the ones worth grouping by.
  *
  * A file whose every directory is a convention — `sources/main.cpp`, `src/app.ts`
  * — belongs to no module but the repo itself, and says so by returning nothing.
- * The earlier version fell back to the conventions in that case, which put
- * `sources` and `headers` bubbles at the top level of a C++ tree: precisely the
- * meaningless grouping this exists to prevent.
+ * Falling back to the conventions in that case put `sources` and `headers`
+ * bubbles at the top level of a C++ tree: precisely the meaningless grouping this
+ * exists to prevent.
+ *
+ * `transparent` is the repo-derived half (see {@link transparentDirs}); without
+ * it only the universal conventions are stripped, which is the right answer for
+ * a caller that has a path but no tree.
  */
-export function significantDirs(path: string): string[] {
-  return path.split("/").slice(0, -1).filter((d) => !FILE_TYPE_DIRS.has(d.toLowerCase()));
+export function significantDirs(path: string, transparent?: ReadonlySet<string>): string[] {
+  const dirs = path.split("/").slice(0, -1);
+  const out: string[] = [];
+  for (let i = 0; i < dirs.length; i++) {
+    if (ROLE_NAMES.has(dirs[i].toLowerCase())) continue;
+    if (transparent?.has(dirs.slice(0, i + 1).join("/"))) continue;
+    out.push(dirs[i]);
+  }
+  return out;
 }
 
 /**
@@ -75,8 +151,8 @@ export function significantDirs(path: string): string[] {
  * group rather than being lifted into the repo root, so a top-level `main.cpp`
  * stays visible instead of disappearing into a bubble named after the repo.
  */
-export function groupKeyOf(path: string, depth: number): string {
-  return significantDirs(path).slice(0, depth).join("/");
+export function groupKeyOf(path: string, depth: number, transparent?: ReadonlySet<string>): string {
+  return significantDirs(path, transparent).slice(0, depth).join("/");
 }
 
 /**
@@ -88,8 +164,9 @@ export function groupKeyOf(path: string, depth: number): string {
  * in the graph is the rung where every path has run out of directories together.
  */
 export function fileRungOf(graph: VizGraph): number {
+  const transparent = transparentDirs(graph);
   let deepest = 0;
-  for (const n of graph.nodes) deepest = Math.max(deepest, significantDirs(pathOf(n)).length);
+  for (const n of graph.nodes) deepest = Math.max(deepest, significantDirs(pathOf(n), transparent).length);
   return deepest + 1;
 }
 
@@ -99,9 +176,10 @@ export const ROOT_GROUP = "";
 /** The directory depths this graph can meaningfully be grouped at, shallowest
  * first — so the UI offers the levels a repo actually has rather than a guess. */
 export function availableDepths(graph: VizGraph): number[] {
+  const transparent = transparentDirs(graph);
   let max = 0;
   for (const n of graph.nodes) {
-    const dirs = significantDirs(pathOf(n)).length;
+    const dirs = significantDirs(pathOf(n), transparent).length;
     if (dirs > max) max = dirs;
   }
   // One past the deepest directory: that level groups by file.
@@ -121,6 +199,7 @@ export function availableDepths(graph: VizGraph): number[] {
 export function labelsFor(keys: string[]): Map<string, string> {
   const out = new Map<string, string>();
   const parts = new Map(keys.map((k) => [k, k.split("/")]));
+  const parts_ = (k: string): string[] => parts.get(k)!;
   const depthOf = new Map(keys.map((k) => [k, 1]));
   const labelAt = (k: string, d: number): string => parts.get(k)!.slice(-d).join("/");
 
@@ -145,6 +224,30 @@ export function labelsFor(keys: string[]): Map<string, string> {
       }
     }
     if (!grew) break;
+  }
+  /*
+   * Keep the parent when the parent says something.
+   *
+   * `CMU_LIBS/elmMclUa` reads perfectly as "elmMclUa": forty groups sit under
+   * `CMU_LIBS`, so naming it adds a word every bubble already shares. `web/project`
+   * as "project" reads as nothing at all — and the difference between those two
+   * cases is not the words, it is how many groups the parent holds. A parent
+   * shared by a handful is a place; a parent shared by everything is a container.
+   *
+   * So the parent is kept for the small families and dropped for the big ones,
+   * which needs no vocabulary of filler names and gets repo-specific folders
+   * (`project`, `apps`, `packages`) right without ever having heard of them.
+   */
+  const family = new Map<string, number>();
+  for (const k of keys) {
+    const parent = parts_(k).slice(0, -1).join("/");
+    if (parent) family.set(parent, (family.get(parent) ?? 0) + 1);
+  }
+  for (const k of keys) {
+    const parent = parts_(k).slice(0, -1).join("/");
+    if (parent && (family.get(parent) ?? 0) < CONTAINER_FAMILY) {
+      depthOf.set(k, Math.max(depthOf.get(k)!, 2));
+    }
   }
   for (const k of keys) out.set(k, labelAt(k, depthOf.get(k)!));
   return out;
@@ -182,10 +285,13 @@ export function groupGraph(graph: VizGraph, opts: GroupOptions): VizGraph {
   // Past the last directory level, group by file — the rung between "modules" and
   // "four hundred individual functions" that drilling otherwise has to jump.
   const byFile = opts.depth >= fileRungOf(graph);
+  // Derived from the graph being grouped, not from the scoped subset: drilling
+  // into a subtree must not change what counts as a directory in it.
+  const transparent = transparentDirs(graph);
   const groupOf = new Map<string, string>();
   const groups = new Map<string, { key: string; members: number; internal: number }>();
   for (const n of nodes) {
-    const key = byFile ? pathOf(n) : groupKeyOf(pathOf(n), opts.depth);
+    const key = byFile ? pathOf(n) : groupKeyOf(pathOf(n), opts.depth, transparent);
     groupOf.set(n.id, key);
     const g = groups.get(key);
     if (g) g.members++;
