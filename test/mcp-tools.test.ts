@@ -341,3 +341,46 @@ test('an old name dispatches for real, not just in the alias map', async () => {
   assert.equal(check.isError, false);
   assert.ok(!check.text.startsWith('[graft] refreshed'), 'old check name still skips the refresh');
 });
+
+test('graft_trace_calls: relation narrows the walk, and a bad relation is a soft isError', async () => {
+  const d = fileScopeRepo();
+  // b.ts both imports a.ts and calls into it; the file node is reached only by
+  // the `imports` edge, which is exactly the distinction the filter exists for.
+  const imports = await callTool(d, 'graft_trace_calls', { symbol: 'src/a.ts', relation: 'imports' });
+  assert.equal(imports.isError, false, imports.text);
+  assert.match(imports.text, /imports ←/);
+  assert.ok(!/calls ←/.test(imports.text), imports.text);
+
+  const calls = await callTool(d, 'graft_trace_calls', { symbol: 'helper', relation: ['calls'] });
+  assert.equal(calls.isError, false, calls.text);
+  assert.match(calls.text, /calls ←/);
+
+  const none = await callTool(d, 'graft_trace_calls', { symbol: 'helper', relation: 'extends' });
+  assert.equal(none.isError, false, none.text);
+  assert.match(none.text, /filtered to extends/);
+
+  const bad = await callTool(d, 'graft_trace_calls', { symbol: 'helper', relation: 'inherits' });
+  assert.equal(bad.isError, true);
+  assert.match(bad.text, /unknown relation "inherits"/);
+});
+
+test('graft_repo_map: reports which directory depends on which', async () => {
+  const d = builtRepo();
+  const r = await callTool(d, 'graft_repo_map', {});
+  assert.equal(r.isError, false, r.text);
+  // One file, so nothing crosses: the section must be absent rather than
+  // printed empty.
+  assert.ok(!r.text.includes('depends on'), r.text);
+
+  const chain = chainRepo();
+  mkdirSync(join(chain, 'app'), { recursive: true });
+  writeFileSync(
+    join(chain, 'app', 'main.ts'),
+    "import { compute } from '../src/math.js';\nexport function run(): number {\n  return compute(1, 2);\n}\n",
+  );
+  execFileSync(process.execPath, cliExecArgs(['build', chain]), { stdio: 'pipe' });
+  const crossing = await callTool(chain, 'graft_repo_map', {});
+  assert.equal(crossing.isError, false, crossing.text);
+  assert.match(crossing.text, /depends on/);
+  assert.match(crossing.text, /app\/ → src\/\s+\d+ edges? \(/);
+});

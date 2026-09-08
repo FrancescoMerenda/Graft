@@ -249,11 +249,13 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   const spanSeen = new Set<number>();
   // Mint one definition node from a whole-definition tree node. Shared by both
   // the tags.scm path and the walker fallback so id/span/signature/body_text are
-  // built identically.
-  const mkDef = (name: string, kind: Kind, whole: TsNode): void => {
+  // built identically. `nameNode` is the name token itself where the caller has
+  // it: a C++ out-of-line definition carries its class in the declarator, so the
+  // scope is only reachable from there (see {@link scopeChain}).
+  const mkDef = (name: string, kind: Kind, whole: TsNode, nameNode?: TsNode | null): void => {
     if (spanSeen.has(whole.startIndex)) return;
     spanSeen.add(whole.startIndex);
-    const idBase = `${rel}#${name}`;
+    const idBase = `${rel}#${[...scopeChain(nameNode ?? null, whole), name].join(".")}`;
     let id = idBase, n = 2;
     while (minted.has(id)) id = `${idBase}~${n++}`;
     minted.add(id);
@@ -379,7 +381,7 @@ function tagsExtract(
   query: unknown,
   root: TsNode,
   rel: string,
-  mkDef: (name: string, kind: Kind, whole: TsNode) => void,
+  mkDef: (name: string, kind: Kind, whole: TsNode, nameNode?: TsNode | null) => void,
   defs: Def[],
   rawEdges: RawEdge[],
   langName: string,
@@ -392,13 +394,14 @@ function tagsExtract(
   const defNameAt = new Set<number>();
   const calls: Array<{ name: string; at: number }> = [];
   const refs: Array<{ name: string; at: number }> = [];
+  const supers: Array<{ name: string; at: number }> = [];
   for (const m of matches) {
     const cap: Record<string, TsNode> = {};
     for (const c of m.captures) cap[c.name] = c.node;
     const defKey = Object.keys(cap).find((k) => k.startsWith("definition."));
     if (defKey && cap.name) {
       defNameAt.add(cap.name.startIndex);
-      mkDef(cap.name.text, KIND[defKey.slice("definition.".length)] ?? "function", defScope(cap[defKey], langName));
+      mkDef(cap.name.text, KIND[defKey.slice("definition.".length)] ?? "function", defScope(cap[defKey], langName), cap.name);
     }
     if (("reference.call" in cap || "reference.send" in cap) && cap.name)
       calls.push({ name: cap.name.text, at: cap.name.startIndex });
@@ -412,6 +415,13 @@ function tagsExtract(
     if (("reference.class" in cap || "reference.interface" in cap ||
          "reference.implementation" in cap || "reference.module" in cap) && cap.name)
       refs.push({ name: cap.name.text, at: cap.name.startIndex });
+    // A supertype is not merely "named": it is the strongest coupling a class can
+    // have, and flattening it into `references` alongside every incidental mention
+    // threw away the one relation an object-oriented codebase is most read for.
+    // Any grammar can opt in by capturing @reference.extends; those that don't keep
+    // their existing behaviour.
+    if ("reference.extends" in cap && cap.name)
+      supers.push({ name: cap.name.text, at: cap.name.startIndex });
   }
   // innermost enclosing definition of a token at byte offset `at`
   const enclosing = (at: number) =>
@@ -422,6 +432,12 @@ function tagsExtract(
     if (defNameAt.has(c.at)) continue;
     const enc = enclosing(c.at);
     rawEdges.push({ source: enc ? enc.id : rel, relation: "calls", file: rel, name: c.name });
+  }
+  for (const sup of supers) {
+    if (defNameAt.has(sup.at)) continue;
+    const enc = enclosing(sup.at);
+    if (!enc) continue; // a supertype outside any class has no sound source
+    rawEdges.push({ source: enc.id, relation: "extends", file: rel, name: sup.name });
   }
   for (const r of refs) {
     if (defNameAt.has(r.at)) continue;
@@ -517,6 +533,53 @@ function nextNamedSibling(n: TsNode): TsNode | null {
   }
   return null;
 }
+/**
+ * Node types that introduce a named scope, across every breadth-tier grammar.
+ *
+ * Deliberately a type-name list rather than per-language config: tree-sitter
+ * grammars converge on these names, and a language whose containers are missing
+ * here simply keeps the old unqualified ids rather than getting wrong ones.
+ */
+const SCOPE_CONTAINER = /^(class_specifier|struct_specifier|union_specifier|namespace_definition|class_declaration|class_definition|class_body|interface_declaration|trait_declaration|object_declaration|namespace_declaration|impl_item|trait_item|mod_item|module|object_definition)$/;
+
+/** Grammars that write a qualifier into the name itself: `A::b`, `A.b`. */
+const QUALIFIED = /^(qualified_identifier|scoped_identifier|scoped_type_identifier)$/;
+
+/**
+ * The scopes enclosing a definition, outermost first.
+ *
+ * Two sources, because C++ splits a symbol's scope across both. An in-class
+ * definition is lexically inside its `class_specifier`, but an out-of-line one —
+ * `QString DbColumn::toString() const {}` — sits at file level with the class
+ * written into the declarator instead. Reading only the lexical containers gives
+ * every out-of-line method in a translation unit the same bare id, which is how
+ * two classes' `toString` used to collapse into `#toString` and `#toString~2`.
+ */
+function scopeChain(nameNode: TsNode | null, whole: TsNode): string[] {
+  const out: string[] = [];
+  // Qualifiers in the declarator, innermost first as we walk outwards: for
+  // `A::B::c` the tree nests as A(scope) → B(scope) → c, so unshifting each
+  // scope as we climb rebuilds [A, B].
+  let q: TsNode | null = nameNode;
+  while (q?.parent && QUALIFIED.test(q.parent.type)) {
+    const scope = q.parent.childForFieldName?.("scope");
+    if (scope?.text) out.unshift(scope.text);
+    q = q.parent;
+  }
+  // Lexical containers around the definition, which sit outside anything the
+  // declarator named.
+  let n: TsNode | null = whole.parent;
+  while (n) {
+    if (SCOPE_CONTAINER.test(n.type)) {
+      // `name` in almost every grammar; Rust's `impl_item` calls it `type`.
+      const named = n.childForFieldName?.("name") ?? n.childForFieldName?.("type");
+      if (named?.text) out.unshift(named.text);
+    }
+    n = n.parent;
+  }
+  return out;
+}
+
 function defScope(node: TsNode, langName?: string): TsNode {
   let n = node;
   while (n.parent && DEF_CONTAINER.test(n.parent.type)) n = n.parent;

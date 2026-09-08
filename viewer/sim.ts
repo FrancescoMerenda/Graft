@@ -1,0 +1,223 @@
+/**
+ * Owns the layout and hides where it runs.
+ *
+ * A Worker is the whole point — the layout costs ~90ms a tick on a 26k-node graph,
+ * which on the main thread caps the entire UI at 11fps while it settles. But a
+ * worker is not always available (a strict CSP, a `file://` export in a browser
+ * that will not take a blob URL), and the viewer must still work there, just
+ * slower. Both paths present the same surface, so nothing above this file knows
+ * which one it got.
+ *
+ * `positions` is a stable array the renderer may read at any time. Buffers coming
+ * back from the worker are copied into it and returned immediately: the copy is
+ * ~20µs for 26k nodes, and it buys a contract with no ownership rules at all.
+ */
+import { Layout, type SimSpec } from "./sim-core.js";
+import type { FromWorker, ToWorker } from "./sim-worker.js";
+
+/** The worker's own bundle, inlined at build time (see scripts/build-viewer.mjs).
+ * Absent when the viewer runs unbundled, which is exactly when the inline layout
+ * path is the right answer anyway. */
+declare const __GRAFT_SIM_WORKER__: string | undefined;
+
+function workerSource(): string | null {
+  try {
+    return typeof __GRAFT_SIM_WORKER__ === "string" ? __GRAFT_SIM_WORKER__ : null;
+  } catch {
+    return null; // not defined at all in an unbundled dev load
+  }
+}
+
+/** Layout milliseconds the inline path is allowed to spend per frame. Past this it
+ * yields to the renderer: a slow layout is survivable, a frozen page is not. */
+const INLINE_BUDGET_MS = 8;
+
+export class LayoutDriver {
+  /** Live positions, `[x0,y0,x1,y1,…]`, index-aligned with the node array. */
+  positions: Float32Array = new Float32Array(0);
+  /** True while the layout is still moving. */
+  hot = false;
+  /** Called after every position update the renderer should draw. */
+  onFrame: () => void = () => {};
+
+  private worker: Worker | null = null;
+  private inline: Layout | null = null;
+  private inlineTimer = 0;
+  private count = 0;
+  /** True while an exact layout owns `positions` — see `receive` and `setStatic`. */
+  private frozen = false;
+  /** The last spec handed to the layout, so a frozen picture can be handed BACK to
+   * the simulation from where it currently is rather than from where the
+   * simulation last left it. */
+  private spec: SimSpec | null = null;
+
+  constructor() {
+    const source = workerSource();
+    if (!source) return;
+    try {
+      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      this.worker = new Worker(url, { type: "classic" });
+      URL.revokeObjectURL(url);
+      this.worker.onmessage = (event: MessageEvent<FromWorker>) => this.receive(event.data);
+      // A worker that dies mid-layout must not take the graph with it: drop to the
+      // inline path and carry on from wherever the positions had reached.
+      this.worker.onerror = () => this.demote();
+    } catch {
+      this.worker = null; // blob workers refused — inline it is
+    }
+  }
+
+  private receive(msg: FromWorker): void {
+    // A frame already in flight when `setStatic` stopped the worker still arrives,
+    // and copying it would overwrite an exact layout with a half-settled force one
+    // — which is how a tree layout that provably does not overlap ended up drawn
+    // with bubbles on top of each other. The buffer is still handed back, so the
+    // worker keeps its pair and can resume the moment the layout is reheated.
+    const incoming = new Float32Array(msg.buffer);
+    if (!this.frozen && incoming.length === this.positions.length) this.positions.set(incoming);
+    this.hot = this.frozen ? false : msg.hot;
+    this.post({ type: "return", buffer: msg.buffer }, [msg.buffer]);
+    this.onFrame();
+  }
+
+  private post(msg: ToWorker, transfer: Transferable[] = []): void {
+    this.worker?.postMessage(msg, transfer);
+  }
+
+  /** Fall back to the main thread, keeping whatever layout we already have. */
+  private demote(): void {
+    this.worker?.terminate();
+    this.worker = null;
+  }
+
+  setData(spec: SimSpec): void {
+    this.frozen = false;
+    this.spec = spec;
+    this.count = spec.count;
+    this.positions = new Float32Array(spec.positions);
+    this.stopInline();
+    if (this.worker) {
+      this.post({ type: "data", spec });
+      return;
+    }
+    this.inline = new Layout(spec);
+    this.runInline();
+  }
+
+  /**
+   * The inline layout, time-sliced. Ticks until the frame budget is spent, paints,
+   * then yields — so even without a worker the page keeps responding, at the cost
+   * of a layout that settles over more wall-clock seconds.
+   */
+  private runInline(): void {
+    if (!this.inline) return;
+    const step = (): void => {
+      if (!this.inline) return;
+      const until = performance.now() + INLINE_BUDGET_MS;
+      do {
+        this.inline.tick(1);
+      } while (this.inline.hot && performance.now() < until);
+      this.inline.read(this.positions);
+      this.hot = this.inline.hot;
+      this.onFrame();
+      if (this.hot) this.inlineTimer = requestAnimationFrame(step);
+    };
+    this.inlineTimer = requestAnimationFrame(step);
+  }
+
+  private stopInline(): void {
+    cancelAnimationFrame(this.inlineTimer);
+    this.inline?.stop();
+    this.inline = null;
+  }
+
+  /**
+   * Adopt positions computed elsewhere — the radial and layered layouts, which are
+   * exact rather than iterative. The simulation is stopped rather than seeded: a
+   * structural layout that then drifts under a force is neither of the two things
+   * the reader asked for.
+   */
+  setStatic(positions: Float32Array<ArrayBufferLike>): void {
+    this.stopInline();
+    this.frozen = true;
+    this.post({ type: "stop" });
+    this.positions = positions;
+    this.hot = false;
+    this.onFrame();
+  }
+
+  /** True while an exact layout owns the positions and no simulation is running —
+   * the caller has to keep nodes apart itself. */
+  get isStatic(): boolean {
+    return this.frozen;
+  }
+
+  /**
+   * Hand the picture on screen back to the simulation.
+   *
+   * A static layout stops the simulation, which keeps its bodies wherever they
+   * were when it was stopped — so plain `reheat` resumes a layout nobody is
+   * looking at any more, and everything jumps. Worse, while it was stopped
+   * nothing pushed nodes apart at all: a reader could drag one bubble on top of
+   * another and it would simply stay there. Restating the current positions first
+   * is what makes dragging behave the same in every layout mode.
+   */
+  resume(alpha = 0.3): void {
+    if (!this.frozen || !this.spec) { this.reheat(alpha); return; }
+    this.frozen = false;
+    const spec: SimSpec = { ...this.spec, positions: Float32Array.from(this.positions) };
+    this.spec = spec;
+    this.positions = Float32Array.from(this.positions);
+    if (this.worker) {
+      this.post({ type: "data", spec });
+      this.post({ type: "reheat", alpha });
+      return;
+    }
+    this.stopInline();
+    this.inline = new Layout(spec);
+    this.inline.reheat(alpha);
+    this.hot = true;
+    this.runInline();
+  }
+
+  reheat(alpha = 0.6): void {
+    this.frozen = false;
+    if (this.worker) { this.post({ type: "reheat", alpha }); return; }
+    this.inline?.reheat(alpha);
+    if (this.inline && !this.hot) { this.hot = true; this.runInline(); }
+  }
+
+  /**
+   * Pin or release one node.
+   *
+   * The pinned position is written into the local buffer as well as sent to the
+   * layout, because the layout answers a batch of ticks later — up to ~180ms on a
+   * large graph — and a node that trails the cursor by that much reads as stuck
+   * rather than dragged. The worker converges on the same place; this just stops
+   * the wait from being visible.
+   */
+  fix(index: number, x: number | null, y: number | null): void {
+    if (x !== null && y !== null && this.positions.length > index * 2 + 1) {
+      this.positions[index * 2] = x;
+      this.positions[index * 2 + 1] = y;
+      this.onFrame();
+    }
+    if (this.worker) { this.post({ type: "fix", index, x, y }); return; }
+    this.inline?.fix(index, x, y);
+  }
+
+  resize(width: number, height: number): void {
+    if (this.worker) { this.post({ type: "resize", width, height }); return; }
+    this.inline?.resize(width, height);
+  }
+
+  stop(): void {
+    this.post({ type: "stop" });
+    this.stopInline();
+    this.hot = false;
+  }
+
+  get size(): number {
+    return this.count;
+  }
+}

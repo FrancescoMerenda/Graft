@@ -26,3 +26,7 @@ transcripts/
 # a personal setup like the Claude settings above, not a shared artifact.
 .cursor/
 bun.lock
+.mcp.json
+.claude/
+AGENTS.md
+.roo/

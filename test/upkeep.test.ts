@@ -49,8 +49,17 @@ test('formatUpdateNudge stays silent unless there is something to say', () => {
   const line = formatUpdateNudge('0.9.1', '0.11.0');
   assert.ok(line);
   assert.match(line, /0\.9\.1 → 0\.11\.0/);
-  assert.match(line, /npm i -g @nanonets\/graft@latest/);
+  assert.match(line, /npm install -g @nanonets\/graft@latest/);
   assert.equal(line.split('\n').length, 1, 'one line — this rides in an agent context window');
+});
+
+// A bun-installed graft that is told to run npm gets a no-op: npm writes into its
+// own global root and the binary on PATH stays where it was.
+test('formatUpdateNudge names the manager that owns the install', () => {
+  const line = formatUpdateNudge('0.9.1', '0.11.0', 'bun');
+  assert.ok(line);
+  assert.match(line, /bun add -g @nanonets\/graft@latest/);
+  assert.doesNotMatch(line, /npm/);
 });
 
 test('needsRefresh treats a missing or malformed cache as stale', () => {

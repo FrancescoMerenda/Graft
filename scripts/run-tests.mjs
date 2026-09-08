@@ -44,7 +44,11 @@ const gitEnv = {
 };
 
 const isBun = "bun" in process.versions;
-const testArgs = isBun ? ["test", ...files] : ["--import", "tsx", "--test", ...files];
+// `bun test` caps every test at 5s; node:test has no default cap at all. Several
+// suites spawn the CLI two or three times over a scratch repo and legitimately run
+// longer than that, so match node's intent rather than let the runtime decide which
+// tests are allowed to be slow. Each helper still carries its own tighter timeout.
+const testArgs = isBun ? ["test", "--timeout", "120000", ...files] : ["--import", "tsx", "--test", ...files];
 const result = spawnSync(process.execPath, testArgs, {
   cwd: repoRoot,
   stdio: "inherit",

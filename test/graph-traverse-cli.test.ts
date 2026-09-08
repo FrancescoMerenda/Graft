@@ -215,3 +215,65 @@ test('graft callers: quotes the call site, and only where it is the right line',
   const json = JSON.parse(runCli(['callers', 'add', d, '--json']).stdout);
   assert.ok(!JSON.stringify(json).includes('return add(a, -b)'));
 });
+
+// ── --relation ────────────────────────────────────────────────────────────
+
+/** A repo where the same symbol is both inherited from and called, so a filter
+ * has something to actually separate. */
+function inheritRepo(): string {
+  const d = mkdtempSync(join(tmpdir(), 'graft-relation-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(
+    join(d, 'src', 'base.ts'),
+    'export class Base {\n  run(): number {\n    return 1;\n  }\n}\n',
+  );
+  writeFileSync(
+    join(d, 'src', 'derived.ts'),
+    "import { Base } from './base.js';\nexport class Derived extends Base {\n  run(): number {\n    return 2;\n  }\n}\n",
+  );
+  writeFileSync(
+    join(d, 'src', 'user.ts'),
+    "import { Base } from './base.js';\nexport function use(): number {\n  return new Base().run();\n}\n",
+  );
+  execFileSync(process.execPath, cliExecArgs(['build', d]), { stdio: 'pipe' });
+  return d;
+}
+
+test('graft callers --relation extends: reports the subclass and nothing else', () => {
+  const repo = inheritRepo();
+  const all = runCli(['callers', 'Base', repo]);
+  assert.equal(all.status, 0, all.stderr);
+  assert.match(all.stdout, /extends ← Derived/);
+
+  const only = runCli(['callers', 'Base', repo, '--relation', 'extends']);
+  assert.equal(only.status, 0, only.stderr);
+  assert.match(only.stdout, /extends ← Derived/);
+  // Every hit line in a filtered walk is of the asked-for kind — that is the
+  // whole point of the flag, and grepping the output was the workaround.
+  const hits = only.stdout.split('\n').filter((l) => /^ {2}\w+ ←/.test(l));
+  assert.ok(hits.length > 0, only.stdout);
+  assert.ok(hits.every((l) => l.includes('extends ←')), only.stdout);
+});
+
+test('graft callers --relation: a kind with no edges says so, naming the filter', () => {
+  const repo = inheritRepo();
+  const r = runCli(['callers', 'Base', repo, '--relation', 'implements']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /no indexed callers \(filtered to implements\)/);
+});
+
+test('graft callers --relation: an unknown kind exits 1 rather than reporting nothing', () => {
+  const repo = inheritRepo();
+  const r = runCli(['callers', 'Base', repo, '--relation', 'inherits']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unknown relation "inherits"/);
+});
+
+test('graft callers --relation --json: records the filter it applied', () => {
+  const repo = inheritRepo();
+  const r = runCli(['callers', 'Base', repo, '--relation', 'extends,calls', '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  const payload = JSON.parse(r.stdout) as { relations: string[] };
+  // As written, not re-sorted: the flag echoes the caller's own filter back.
+  assert.deepEqual(payload.relations, ['extends', 'calls']);
+});

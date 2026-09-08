@@ -36,7 +36,8 @@ import {
 } from "./traverse-cli.js";
 import { edgeWalk, resolveSymbol, type Direction } from "./traverse.js";
 import { wiringPath } from "./write.js";
-import type { GraphV1 } from "./types.js";
+import { WALK_RELATIONS } from "./relations.js";
+import type { GraphV1, Relation } from "./types.js";
 import {
   ask,
   type AskHit,
@@ -660,10 +661,11 @@ export function federateCallers(
   root: string,
   override: string | undefined,
   symbol: string,
-  opts: { direction?: Direction; depth?: number; in?: string } = {},
+  opts: { direction?: Direction; depth?: number; in?: string; relations?: readonly Relation[] } = {},
 ): { text: string; found: boolean } {
   const wg = loadWorkspaceGraphs(root, override);
   const direction: Direction = opts.direction ?? "in";
+  const relationSet = opts.relations?.length ? new Set<Relation>(opts.relations) : WALK_RELATIONS;
   const depth = opts.depth && opts.depth >= 1 ? Math.floor(opts.depth) : 1;
   const showDepth = depth > 1;
 
@@ -673,11 +675,11 @@ export function federateCallers(
     const matches = resolveSymbol(graph, symbol, opts.in ? { in: opts.in } : {});
     if (matches.length === 0) continue;
     found = true;
-    const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(graph, m, direction, depth) }));
+    const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(graph, m, direction, depth, relationSet) }));
     const lines = [`## ${child}/`];
     for (const { symbol: sym, hits } of results) {
       lines.push(headerOf(sym));
-      if (hits.length === 0) lines.push(looseNoteFor(direction, sym.name, matches.length));
+      if (hits.length === 0) lines.push(looseNoteFor(direction, sym.name, matches.length, opts.relations));
       else for (const h of hits) lines.push(hitLine(direction, h, showDepth));
     }
     const body = lines.join("\n");

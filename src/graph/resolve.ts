@@ -58,6 +58,39 @@ const FAMILIES: ReadonlyArray<readonly string[]> = [
   ["c", "cpp"],
 ];
 const FAMILY_OF = new Map<string, string>();
+
+/**
+ * Directory names that describe a FILE'S ROLE rather than a component: the ones
+ * that separate a module's declarations from its definitions instead of
+ * separating one module from another.
+ *
+ * Kept in step with the viewer's own list (`viewer/aggregate.ts`) — both answer
+ * "which component is this file part of", one for grouping bubbles and one for
+ * the reachability gate below.
+ */
+const ROLE_DIRS = new Set([
+  "src", "source", "sources", "lib",
+  "include", "includes", "inc", "header", "headers",
+  "impl", "internal", "private", "public", "detail",
+]);
+
+/**
+ * The component a file belongs to: its path up to the first role directory.
+ *
+ * `CMU_LIBS/elmSql/sources/Query.cpp` and `CMU_LIBS/elmSql/headers/elmSql/Query.h`
+ * are one module — a declaration and its definition — so the gate below has to see
+ * them as one place. A file directly in a role directory (`sources/main.cpp`)
+ * falls back to its own directory, which is the coarsest honest answer.
+ */
+function moduleOf(path: string): string {
+  const dirs = toPosixPath(path).split("/").slice(0, -1);
+  const out: string[] = [];
+  for (const d of dirs) {
+    if (ROLE_DIRS.has(d.toLowerCase())) break;
+    out.push(d);
+  }
+  return out.join("/") || dirs.join("/");
+}
 for (const group of FAMILIES) for (const lang of group) FAMILY_OF.set(lang, group[0]);
 
 /**
@@ -192,9 +225,75 @@ export function resolveEdges(
     push(classTraits, ownName, e.name);
   }
 
+  /** Where an `imports` raw edge points: a file node id when the specifier
+   * resolves in-repo, else the specifier itself. Extracted so the reachability
+   * prepass below and the edge loop agree by construction. */
+  const importTargetOf = (e: RawEdge): string =>
+    hasGoModules && e.file.endsWith(".go")
+      ? resolveGoImport(e.specifier!, opts.goModules!, goFilesByDir)
+      : e.file.endsWith(".java")
+        ? resolveJavaImport(e.specifier!, javaFilesBySuffix)
+        : C_EXT.test(e.file)
+          ? resolveCInclude(e.specifier!, e.file, byId, cFilesBySuffix)
+          : e.file.endsWith(".rs")
+            ? resolveRustUse(e.specifier!, e.file, byId, rustCrateRoots)
+            : e.file.endsWith(".php")
+              ? resolvePhpUse(e.specifier!, phpFilesBySuffix)
+              : resolveImport(e.specifier!, e.file, byId);
+
+  /**
+   * Which modules each file can actually see, from its own resolved imports.
+   *
+   * The unique-name fallback treats the whole repo as one namespace, and on a
+   * large C++ tree that is how `db.commit()` in elmSql became a call into
+   * elmSnmp's `commit`, `QVariant::fromValue` became elmDsc's `fromValue`, and
+   * every `instance()` in the repo became a call into elmLedsManager's
+   * singleton. 994 of 1357 cross-module call edges on one real repo were this,
+   * and none of them had an include to stand on: `FAMILIES` above stops a Go
+   * builtin resolving into TypeScript, and this stops the same mistake between
+   * two modules of one language.
+   *
+   * A file with no resolved imports at all gets no entry, and the gate then does
+   * not apply — no information is not the same as evidence of absence, and in a
+   * language whose requires rarely resolve that distinction is the difference
+   * between a strict gate and a broken one.
+   */
+  const seesModules = new Map<string, Set<string>>();
+  for (const e of rawEdges) {
+    if (e.relation !== "imports" || !e.specifier) continue;
+    const target = importTargetOf(e);
+    const targetPath = byId.get(target)?.path;
+    if (targetPath === undefined) continue; // an external module tells us nothing
+    let set = seesModules.get(e.file);
+    if (!set) seesModules.set(e.file, (set = new Set()));
+    set.add(moduleOf(targetPath));
+  }
+
+  /**
+   * May a bare-name match in `targetPath` be trusted from `file`?
+   *
+   * Same module is always fine — that is where a name collision is most likely
+   * to be the real thing. Across modules, the caller must import something from
+   * the target's module; without that there is no path by which the name could
+   * even be in scope.
+   */
+  const canReachModule = (file: string, targetPath: string): boolean => {
+    const from = moduleOf(file);
+    const to = moduleOf(targetPath);
+    if (from === to) return true;
+    const seen = seesModules.get(file);
+    return seen === undefined || seen.has(to);
+  };
+
   const out: EdgeV1[] = [];
   const seen = new Set<string>();
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"]) => {
+    // A symbol never relates to itself. Bare-name resolution can land one on its
+    // own definition — `enchantum::array : std::array` resolves `array` to the
+    // very class that declared it — and a self-loop is not a weaker answer than
+    // the right one, it is a wrong one: nothing extends, calls or imports itself,
+    // and drawn it becomes a node with a loop where a real dependency should be.
+    if (source === target) return;
     const key = `${source}\0${relation}\0${target}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -205,19 +304,7 @@ export function resolveEdges(
     if (e.relation === "contains" && e.targetId) {
       add(e.source, e.targetId, "contains", "extracted");
     } else if (e.relation === "imports" && e.specifier) {
-      const target =
-        hasGoModules && e.file.endsWith(".go")
-          ? resolveGoImport(e.specifier, opts.goModules!, goFilesByDir)
-          : e.file.endsWith(".java")
-            ? resolveJavaImport(e.specifier, javaFilesBySuffix)
-            : C_EXT.test(e.file)
-              ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
-              : e.file.endsWith(".rs")
-                ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
-                : e.file.endsWith(".php")
-                  ? resolvePhpUse(e.specifier, phpFilesBySuffix)
-                  : resolveImport(e.specifier, e.file, byId);
-      add(e.source, target, "imports", "extracted");
+      add(e.source, importTargetOf(e), "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
       // (`use SomeTrait;`) as an implements edge, and a trait is a valid target.
@@ -329,6 +416,15 @@ export function resolveEdges(
       }
       if (!hit && SWIFT_EXT.test(e.file)) {
         hit = resolveName(e.name!, e.file, SWIFT_CTOR_KINDS, perFileName, globalName);
+      }
+      // A cross-module bare-name match in the breadth tier needs an include to
+      // stand on — see `seesModules`. Confined to the generic tier because that
+      // is where tags.scm hands every call over as a bare name with no receiver
+      // to check it against; the depth tier resolves members by type and does not
+      // have the failure this prevents.
+      if (hit && srcOrigin === "generic" && hit.confidence === "inferred") {
+        const targetPath = byId.get(hit.id)?.path;
+        if (targetPath !== undefined && !canReachModule(e.file, targetPath)) hit = null;
       }
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }

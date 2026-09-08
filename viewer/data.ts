@@ -11,6 +11,11 @@ export interface VizNode {
   sources: string[];
   evidence?: Evidence[];
   owners?: NodeOwner[];
+  /** Source path, carried explicitly so grouping never has to parse it back out
+   * of a display string. Absent on context nodes, which have no single file. */
+  path?: string;
+  /** Symbols behind a rolled-up group node — see viewer/aggregate.ts. */
+  count?: number;
 }
 
 /** A contributor on a node — see `NodeOwner` in src/viz/assemble.ts. */
@@ -28,6 +33,18 @@ export interface VizEdge {
   relation: string;
   description?: string;
   confidence?: "extracted" | "inferred";
+  /** Edges behind a rolled-up bundle; drives stroke width when grouped. */
+  weight?: number;
+  /**
+   * The actual symbol pairs this bundle stands for, capped.
+   *
+   * "elmMcl uses elmSip" is where most tools stop, and it is the least useful half
+   * of the fact. What a reader needs next is WHICH call — the one line to open, or
+   * the one dependency to break. Kept as ids so the panel can name and link them.
+   */
+  members?: Array<{ source: string; target: string }>;
+  /** Members beyond the cap, so a truncated list says so rather than lying. */
+  moreMembers?: number;
 }
 
 export interface EvidenceLine {
@@ -60,28 +77,86 @@ export interface VizGraph {
 }
 
 /** Every relation verb belongs to one family; form follows family. */
-export type Family = "structure" | "dependency" | "contract" | "association";
+export type Family = "structure" | "dependency" | "contract" | "association" | "file";
 
 const FAMILY: Record<string, Family> = {
   part_of: "structure", contains: "structure",
-  uses: "dependency", depends_on: "dependency", calls: "dependency", imports: "dependency",
+  uses: "dependency", depends_on: "dependency", calls: "dependency",
   produces: "dependency", configures: "dependency", validates: "dependency",
   extends: "contract", implements: "contract",
   references: "association",
+  // Its own family, not a dependency. A C `#include` is a preprocessor fact about
+  // two FILES; a call is a fact about two SYMBOLS. Drawing them with one grammar
+  // said the header "uses" the thing that included it, which is not a claim
+  // anybody would make in words.
+  imports: "file",
 };
+
+/**
+ * Which layer a relation belongs to.
+ *
+ * `file` edges describe how the tree is assembled — includes, containment. `code`
+ * edges describe what the program does at runtime. Mixing them buries 13,591 call
+ * edges under a wall of `#include` lines that answer a different question, so the
+ * viewer lets you look at one at a time.
+ */
+export type Layer = "code" | "file";
+
+export function layerOf(rel: string): Layer {
+  const fam = famOf(rel);
+  return fam === "file" || fam === "structure" ? "file" : "code";
+}
 
 export function famOf(rel: string): Family {
   return FAMILY[rel] ?? "association";
 }
 
 /** Force-spring rest length per family: hierarchy pulls tight. */
-export const REST: Record<Family, number> = { structure: 85, dependency: 145, contract: 150, association: 185 };
+export const REST: Record<Family, number> = {
+  structure: 85, dependency: 145, contract: 150, association: 185,
+  // Includes are the loosest tie there is — a header pulled in by forty files
+  // should not drag all forty into a knot around it.
+  file: 210,
+};
 
 /** Chip grouping: "part of" and "uses" are clear as groups; other verbs stand alone. */
 export function chipKey(rel: string): string {
   if (famOf(rel) === "structure") return "part of";
-  if (rel === "calls" || rel === "uses" || rel === "depends_on" || rel === "imports") return "uses";
+  // `imports` deliberately NOT folded in here: it is the one verb in this list
+  // that is not about symbols, and hiding it inside "uses" is what made a call
+  // graph and an include graph look like the same picture.
+  if (rel === "imports") return "includes";
+  if (rel === "calls" || rel === "uses" || rel === "depends_on") return "uses";
   return rel.replace(/_/g, " ");
+}
+
+/**
+ * The same relation, said from the other end.
+ *
+ * An edge into the selected node and an edge out of it are different facts, and
+ * labelling both "calls" makes the picture say the opposite of the truth half the
+ * time. Colour already separates them; the words have to agree with the colour.
+ */
+const PASSIVE: Record<string, string> = {
+  calls: "called by",
+  uses: "used by",
+  depends_on: "depended on by",
+  imports: "included by",
+  extends: "extended by",
+  implements: "implemented by",
+  references: "referenced by",
+  produces: "produced by",
+  configures: "configured by",
+  validates: "validated by",
+  contains: "part of",
+  part_of: "contains",
+};
+
+/** How to say `rel` from the selected node's point of view: `out` = it does this
+ * to the other node, `in` = the other node does it to it. */
+export function verbFor(rel: string, direction: "out" | "in"): string {
+  if (direction === "out") return rel.replace(/_/g, " ");
+  return PASSIVE[rel] ?? `${rel.replace(/_/g, " ")} by`;
 }
 
 /** Hover hint: the question the verb answers for someone building or reviewing code. */
@@ -94,6 +169,7 @@ export const CHIP_HINT: Record<string, string> = {
   "extends": "what contract must this honor? (inheritance)",
   "implements": "what contract must this honor? (interface)",
   "references": "mentioned but never called — possible dead coupling",
+  "includes": "which file pulls in which — a preprocessor fact, not a call",
 };
 
 /** Node-type → CSS custom property, per tab. */
@@ -102,11 +178,14 @@ export const CHIP_HINT: Record<string, string> = {
 // blue for what depends on it. The legend labels itself from these type names.
 const CONTEXT_COLORS: Record<string, string> = {
   system: "--sys", concept: "--con", file: "--fil", api: "--api",
-  changed: "--fil", affected: "--sys",
+  changed: "--fil", affected: "--sys", group: "--k-group",
 };
 const CODE_COLORS: Record<string, string> = {
   file: "--k-file", class: "--k-class", function: "--k-fn", method: "--k-method",
   interface: "--k-iface", type: "--k-type", enum: "--k-enum",
+  // A rolled-up directory is not one of the code kinds — it needs its own colour
+  // or it would masquerade as whichever kind it borrowed.
+  group: "--k-group",
 };
 
 export function colorToken(tab: "context" | "code", type: string): string {
@@ -162,6 +241,7 @@ export async function loadCodeGraph(): Promise<VizGraph | null> {
     type: n.kind,
     summary: n.summary ?? n.signature ?? "",
     sources: [`${n.path} · ${n.span}`],
+    path: n.path,
   }));
   const known = new Set(nodes.map((n) => n.id));
   // imports edges may point at unresolved module strings — drop those for rendering

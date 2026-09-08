@@ -484,3 +484,100 @@ test("formatRepoMap: an empty repo map still renders a well-formed header", () =
   assert.match(text, /^repo map — 0 files · 0 symbols · 0 edges ·\s*$/m);
   assert.match(text, /^hotspots:\s*$/m);
 });
+
+// ── module dependencies ───────────────────────────────────────────────────
+
+test("buildRepoMap: rolls crossing edges up into directory dependency bundles", () => {
+  const nodes = [
+    fileNode("src/app/a.ts"),
+    symNode("src/app/a.ts", "handler"),
+    symNode("src/app/a.ts", "helper"),
+    fileNode("src/lib/b.ts"),
+    symNode("src/lib/b.ts", "parse"),
+    symNode("src/lib/b.ts", "Base", { kind: "class" }),
+  ];
+  const edges = [
+    edge("src/app/a.ts#handler", "src/lib/b.ts#parse"),
+    edge("src/app/a.ts#helper", "src/lib/b.ts#parse"),
+    edge("src/app/a.ts#handler", "src/lib/b.ts#Base", "extends"),
+    // Inside one group: counted nowhere, because a group depending on itself is
+    // not something a reader can act on.
+    edge("src/app/a.ts#handler", "src/app/a.ts#helper"),
+  ];
+  const map = buildRepoMap(graphOf(nodes, edges));
+
+  assert.equal(map.deps.length, 1);
+  const [dep] = map.deps;
+  assert.equal(dep.from, "src/app");
+  assert.equal(dep.to, "src/lib");
+  assert.equal(dep.total, 3);
+  assert.deepEqual(dep.byRelation, [
+    { relation: "calls", count: 2 },
+    { relation: "extends", count: 1 },
+  ]);
+});
+
+test("buildRepoMap: dependency direction is not symmetric — a cycle reads as two bundles", () => {
+  const nodes = [
+    fileNode("a/one.ts"),
+    symNode("a/one.ts", "up"),
+    fileNode("b/two.ts"),
+    symNode("b/two.ts", "down"),
+  ];
+  const edges = [edge("a/one.ts#up", "b/two.ts#down"), edge("b/two.ts#down", "a/one.ts#up")];
+  const map = buildRepoMap(graphOf(nodes, edges));
+  assert.deepEqual(
+    map.deps.map((d) => `${d.from}→${d.to}`).sort(),
+    ["a→b", "b→a"],
+  );
+});
+
+test("buildRepoMap: deps are ranked by weight and capped, the rest counted", () => {
+  const nodes = [fileNode("hub/h.ts"), symNode("hub/h.ts", "core")];
+  const edges: EdgeV1[] = [];
+  // Three callers of increasing weight, so the cap has an unambiguous winner.
+  for (const [dir, n] of [["x", 1], ["y", 2], ["z", 3]] as [string, number][]) {
+    nodes.push(fileNode(`${dir}/f.ts`));
+    for (let i = 0; i < n; i++) {
+      nodes.push(symNode(`${dir}/f.ts`, `caller${i}`));
+      edges.push(edge(`${dir}/f.ts#caller${i}`, "hub/h.ts#core"));
+    }
+  }
+  const map = buildRepoMap(graphOf(nodes, edges), { maxDeps: 2 });
+  assert.deepEqual(map.deps.map((d) => d.from), ["z", "y"]);
+  assert.equal(map.depsDropped, 1);
+});
+
+test("formatRepoMap: renders the depends-on section with a per-relation breakdown", () => {
+  const nodes = [
+    fileNode("src/app/a.ts"),
+    symNode("src/app/a.ts", "handler"),
+    fileNode("src/lib/b.ts"),
+    symNode("src/lib/b.ts", "parse"),
+  ];
+  const out = formatRepoMap(buildRepoMap(graphOf(nodes, [edge("src/app/a.ts#handler", "src/lib/b.ts#parse")])));
+  assert.match(out, /depends on/);
+  assert.match(out, /src\/app\/ → src\/lib\/\s+1 edge \(1 calls\)/);
+});
+
+test("formatRepoMap: a repo with no crossing edges prints no depends-on section at all", () => {
+  const nodes = [fileNode("src/a.ts"), symNode("src/a.ts", "solo")];
+  const out = formatRepoMap(buildRepoMap(graphOf(nodes, [])));
+  assert.ok(!out.includes("depends on"), out);
+});
+
+// ── languages ─────────────────────────────────────────────────────────────
+
+test("buildRepoMap: breadth-tier languages are reported, not silently dropped", () => {
+  // A C++ repo with two build scripts. Sniffing only the depth tier called this
+  // repo "javascript" — the language line is the one number a reader takes at
+  // face value, so being 99% wrong there is worse than saying nothing.
+  const nodes = [
+    fileNode("src/engine.cpp"),
+    fileNode("src/engine.hpp"),
+    fileNode("src/driver.c"),
+    fileNode("scripts/build.mjs"),
+  ];
+  const map = buildRepoMap(graphOf(nodes, []));
+  assert.deepEqual(map.totals.languages, ["c", "cpp", "javascript"]);
+});

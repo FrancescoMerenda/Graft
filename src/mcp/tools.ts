@@ -16,6 +16,7 @@ import { sessionInputRate } from '../claude/session-metrics.js';
 import { grepGraph } from '../search/grep.js';
 import { formatGrepResult, zeroHitNote } from '../search/grep-cli.js';
 import { buildRepoMap, formatRepoMap } from '../graph/map.js';
+import { WALK_RELATIONS, parseWalkRelations } from '../graph/relations.js';
 import {
   federateAsk,
   federateCallers,
@@ -24,7 +25,7 @@ import {
   federateMap,
   readWorkspace,
 } from '../graph/workspace.js';
-import type { NodeV1 } from '../graph/types.js';
+import type { NodeV1, Relation } from '../graph/types.js';
 import { canonicalToolName } from './tool-names.js';
 
 export interface ToolDef {
@@ -92,6 +93,9 @@ export const TOOLS: ToolDef[] = [
           description: '"in" (default) = callers/dependents; "out" = callees/dependencies',
         },
         depth: { description: 'transitive walk depth for blast radius (default 1 = direct edges only); pass "all" for the full connected closure — every source that would be affected' },
+        relation: {
+          description: 'only follow these edge kinds — one of calls, references, imports, implements, extends, or an array/comma-separated list of them. Defaults to all of them. Use relation:"extends" with direction:"in" to ask "what subclasses this".',
+        },
         in: { type: 'string', description: 'narrow matches to nodes at or under this repo-relative path prefix, e.g. server/src' },
       },
       required: ['symbol'],
@@ -115,15 +119,27 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'graft_repo_map',
     description:
-      'Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots computed purely from the wiring graph ($0, no LLM). Use this to get oriented in an unfamiliar repo before diving into files.',
+      'Token-budgeted repo orientation — directory clusters, which directory depends on which (rolled-up call/import/extends edges), per-directory hubs, and global hotspots computed purely from the wiring graph ($0, no LLM). Use this to get oriented in an unfamiliar repo before diving into files.',
     inputSchema: {
       type: 'object',
       properties: {
         max_dirs: { type: 'number', description: 'max directory entries shown, rest counted into dropped (default 16)' },
+        max_deps: { type: 'number', description: 'max inter-directory dependency bundles shown (default 12)' },
       },
     },
   },
 ];
+
+/** Parse `graft_trace_calls`'s optional `relation` argument (a string, a
+ * comma-separated string, or an array of either). Undefined when the argument
+ * is absent, which means "every walk relation" — the walk's own default. */
+function relationArg(raw: unknown): { ok: Relation[] } | { error: string } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string' && !Array.isArray(raw)) {
+    return { error: 'relation must be a string or an array of strings' };
+  }
+  return parseWalkRelations(raw as string | string[]);
+}
 
 /** Render every resolved match's header + edge report (or the loud zero-edge
  * note), one block per match, joined with a blank line — the same grouping
@@ -134,12 +150,13 @@ function renderMatches(
   showDepth: boolean,
   matches: NodeV1[],
   hitsFor: (n: NodeV1) => EdgeHit[],
+  relations?: readonly Relation[],
 ): string {
   return matches
     .map((m) => {
       const hits = hitsFor(m);
       const lines = [headerOf(m)];
-      if (hits.length === 0) lines.push(looseNoteFor(direction, m.name, matches.length));
+      if (hits.length === 0) lines.push(looseNoteFor(direction, m.name, matches.length, relations));
       else for (const h of hits) lines.push(hitLine(direction, h, showDepth));
       return lines.join('\n');
     })
@@ -168,8 +185,11 @@ async function callWorkspaceTool(
     case 'graft_trace_calls': {
       const symbol = String(args.symbol ?? args.file ?? '');
       if (!symbol) return { text: 'graft_trace_calls requires a symbol', isError: true };
+      const rel = relationArg(args.relation);
+      if (rel && 'error' in rel) return { text: `graft_trace_calls: ${rel.error}`, isError: true };
       const { text, found } = federateCallers(root, dirOverride, symbol, {
         direction: args.direction === 'out' ? 'out' : 'in',
+        relations: rel?.ok,
         depth: typeof args.depth === 'number' && Number.isFinite(args.depth) ? args.depth : undefined,
         in: typeof args.in === 'string' && args.in ? args.in : undefined,
       });
@@ -297,9 +317,15 @@ async function callSingleTool(
             : typeof args.depth === 'number' && Number.isFinite(args.depth) && args.depth >= 1
               ? Math.floor(args.depth)
               : 1;
-        const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(w, m, direction, depth) }));
+        const rel = relationArg(args.relation);
+        if (rel && 'error' in rel) return { text: `graft_trace_calls: ${rel.error}`, isError: true };
+        const relations = rel?.ok;
+        const results = matches.map((m) => ({
+          symbol: m,
+          hits: edgeWalk(w, m, direction, depth, relations ? new Set(relations) : WALK_RELATIONS),
+        }));
         const byId = new Map(results.map((r) => [r.symbol.id, r.hits]));
-        const body = renderMatches(direction, depth > 1, matches, (m) => byId.get(m.id) ?? []);
+        const body = renderMatches(direction, depth > 1, matches, (m) => byId.get(m.id) ?? [], relations);
         const text = withSavings(body, callersSavings(w, results));
         return { text, isError: false };
       }
@@ -320,7 +346,8 @@ async function callSingleTool(
         const w = loadGraphCached(contextDirFor(root, dirOverride));
         if (!w) return { text: NO_GRAPH, isError: true };
         const maxDirs = typeof args.max_dirs === 'number' && Number.isFinite(args.max_dirs) && args.max_dirs > 0 ? args.max_dirs : undefined;
-        const map = buildRepoMap(w, { maxDirs });
+        const maxDeps = typeof args.max_deps === 'number' && Number.isFinite(args.max_deps) && args.max_deps >= 0 ? args.max_deps : undefined;
+        const map = buildRepoMap(w, { maxDirs, maxDeps });
         return { text: formatRepoMap(map), isError: false };
       }
     default:

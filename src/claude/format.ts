@@ -220,8 +220,8 @@ export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote
     `  • graft ask "<task>" --source: locate + understand. Ranked nodes with the code inlined at each file:line (the ≤8-line crux; add --full for the whole span). The default for "how does X work" / "where is Y".\n` +
     `  • graft grep "<literal>": exhaustive find. Every occurrence, grouped by enclosing symbol; use when you need them ALL (ask is ranked top-N and misses instances).\n` +
     `  • graft skeleton <file>: a file's whole API in ~200 tokens, every signature + span, ~10x cheaper than reading the file.\n` +
-    `  • graft callers <sym> [--direction out] [--depth N|all]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2, or --depth all for every connected source). Run before you change a symbol.\n` +
-    `  • graft map: orientation for an unfamiliar repo, directory clusters, hubs, hotspots. map alone is the answer; don't then skeleton every subsystem it names.\n` +
+    `  • graft callers <sym> [--direction out] [--depth N|all] [--relation <kinds>]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2, or --depth all for every connected source). --relation extends answers "what subclasses this" without the calls mixed in. Run before you change a symbol.\n` +
+    `  • graft map: orientation for an unfamiliar repo, directory clusters, which directory depends on which, hubs, hotspots. map alone is the answer; don't then skeleton every subsystem it names.\n` +
     `  In a monorepo, add --in <path>/ to ask/grep/callers to scope to one sub-project; hits are labeled [scope/].\n` +
     `  Already know the file or symbol to change? Go straight to it: graft grep "<symbol>", read the span, edit. Save ask for when you don't yet know where the code lives.\n` +
     `  Refactor, rename, or multi-file change? Run graft callers <sym> --depth all FIRST to map every connected file; editing the primary file and stopping is the classic miss (platform siblings, a new file to extract).\n` +

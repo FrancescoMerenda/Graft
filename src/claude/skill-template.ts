@@ -67,17 +67,23 @@ Precomputed call/reference edges, not a text search. Symbol can be bare
 - \`--direction out\`: **what this symbol itself calls/depends on** (the old \`callees\`).
 - \`--depth N\`: walk transitively N hops for the **full blast radius** (the old
   \`impact\`); \`--depth 2\` is the usual "what breaks if I touch this".
+- \`--relation <kinds>\`: follow only these edge kinds (\`calls\`, \`references\`,
+  \`imports\`, \`implements\`, \`extends\`; comma-separated). \`--relation extends\`
+  is **"what subclasses this"**; \`--relation imports\` is "who pulls this file
+  in" — questions the unfiltered walk answers only by burying them in the calls.
 - \`--depth all\`: the **entire connected closure** — every source reachable
   through the edges. Reach for this before a **refactor, rename, or any
   multi-file change**: it surfaces the sibling and downstream files (platform
   variants, a module you must split out) that a single-file edit would miss.
 
 ### 5 · \`graft map\`: orientation for an unfamiliar repo or area
-A token-budgeted tour: directory clusters, per-directory hubs, and global
-hotspots, straight from the wiring graph.
+A token-budgeted tour: directory clusters, **which directory depends on which**
+(the crossing call/import/extends edges, rolled up and ranked by weight),
+per-directory hubs, and global hotspots, straight from the wiring graph.
 - **Use it when** you land in a repo cold or are asked for "the architecture".
   \`map\` alone is the answer: read the hub cards it names; do NOT then skeleton
-  or ask your way through every subsystem it lists. \`--max-dirs N\` widens it.
+  or ask your way through every subsystem it lists. \`--max-dirs N\` widens the
+  directory list, \`--max-deps N\` the dependency list.
 
 ### 6 · Lifecycle: \`graft build\` / \`graft check\`
 Every tool above refreshes the graph itself before answering, so what those tools
@@ -103,6 +109,8 @@ stale if you have edited that file this turn.
 | Renaming / deleting / changing a signature | \`graft callers <sym> --depth 2\` first | 1 |
 | Refactor / multi-file change (before editing) | \`graft callers <sym> --depth all\` — map every connected file, don't stop at the first | 1 |
 | "What does this depend on?" | \`graft callers <sym> --direction out\` | 1 |
+| "What subclasses / implements this?" | \`graft callers <sym> --relation extends,implements\` | 1 |
+| "Which parts of the repo lean on which?" | \`graft map\` — read its **depends on** section | 1 |
 | Finding every occurrence of a pattern | \`graft grep "<literal>"\` | 1 |
 | "What's the API of this file?" | \`graft skeleton <file>\` | 1 |
 | Debugging a failure in area X | \`graft ask "<symptom>" --source\`, then \`callers\` on the suspect | 1–2 |

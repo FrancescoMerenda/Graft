@@ -2,10 +2,14 @@
  * graft viz — viewer entry point. Wires tabs, chips, legend, search, theme,
  * SSE live reload, and the three views (Context graph / Code graph / Outline).
  */
-import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, colorToken, cvar, famOf, type VizGraph } from "./data.js";
+import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, cvar, famOf, layerOf, type VizGraph, type Layer } from "./data.js";
+import { shapeOf, shapeSvg } from "./palette.js";
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
+import { groupGraph, availableDepths, pathOf, significantDirs, fileRungOf } from "./aggregate.js";
+import { staticLayout, type LayoutMode } from "./layouts.js";
+import { buildAdjacency, shortestPath, neighborhood, findCycles, hubs, type Adjacency } from "./analysis.js";
 
 type Tab = "context" | "code" | "outline";
 
@@ -18,10 +22,51 @@ const state = {
   outlineOpen: {} as Record<string, boolean>,
 };
 
-const view = new GraphView($("graphSvg") as unknown as SVGSVGElement);
+/**
+ * How the raw graph is turned into the one on screen.
+ *
+ * `depth` and `scope` are the aggregation: roll up to N directory levels, inside
+ * an optional subtree. `shown` is the result, and everything downstream — chips,
+ * legend, counts, every analysis — reads it rather than the raw graph, so what
+ * you can ask about is always exactly what you can see.
+ */
+const tools = {
+  depth: 0,
+  scope: undefined as string | undefined,
+  hideOrphans: false,
+  // Tree by default: a force layout answers "what is near what", but the first
+  // question anyone has of an unfamiliar codebase is "where does it start", and
+  // only one of those two is a shape you can read on arrival.
+  layout: "tree" as LayoutMode,
+  /** Which kind of relation is on screen: what the code does, or how the tree is
+   * assembled. See `setLayer`. */
+  layer: "code" as Layer | "all",
+  /** Set once the reader picks a layer themselves, after which the default below
+   * stops overriding it. */
+  layerPinned: false,
+  shown: null as VizGraph | null,
+  adjacency: null as Adjacency | null,
+  /** Set when `path` is waiting for its second endpoint. */
+  pathFrom: null as string | null,
+  /** What the orbit layout hangs off, set by ctrl-clicking a node. */
+  orbitRoot: undefined as string | undefined,
+};
 
-function activeGraph(): VizGraph | null {
+/** Past this, an ungrouped force layout is a dot cloud rather than a diagram, so
+ * the first thing a reader sees is the rolled-up view. They can still turn it off. */
+const AUTO_GROUP_NODES = 2000;
+const LENS_HOPS = 2;
+
+const view = new GraphView($("graphCanvas") as HTMLCanvasElement);
+
+/** The dataset behind the current tab, before grouping. */
+function rawGraph(): VizGraph | null {
   return state.tab === "context" ? state.context : state.code;
+}
+
+/** What is actually on the canvas — grouped, scoped, filtered. */
+function activeGraph(): VizGraph | null {
+  return tools.shown ?? rawGraph();
 }
 
 function graphTab(): "context" | "code" {
@@ -78,11 +123,15 @@ function renderLegend(): void {
   if (!graph) return;
   const counts = new Map<string, number>();
   for (const n of graph.nodes) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
+  // Shape, not colour. Colour is spent on which module a node belongs to — the
+  // question that actually organises the picture — so kind is carried by outline
+  // and the legend has to show the outline rather than a swatch.
+  const ink = cvar("--ink");
   for (const [type, count] of counts) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "lchip" + (view.hiddenTypes[type] ? " off" : "");
-    chip.innerHTML = `<span class="sw" style="background:${cvar(colorToken(graphTab(), type))}"></span>${type} <span style="color:var(--muted);font-weight:500">${count}</span>`;
+    chip.innerHTML = `${shapeSvg(shapeOf(type), ink)}${type} <span style="color:var(--muted);font-weight:500">${count}</span>`;
     chip.addEventListener("click", () => {
       view.hiddenTypes[type] = !view.hiddenTypes[type];
       renderLegend();
@@ -95,6 +144,11 @@ function renderLegend(): void {
   // A decoration toggle, not a type filter: it sits after the type chips, carries
   // its own class, and deliberately does NOT feed `updateShownCount` — hiding a
   // face hides no node.
+  const hint = document.createElement("span");
+  hint.className = "lhint";
+  hint.textContent = tools.depth > 0 ? "colour = module" : "colour = directory";
+  host.appendChild(hint);
+
   const graphHasOwners = graph.nodes.some((n) => n.owners?.length);
   if (graphHasOwners) {
     const chip = document.createElement("button");
@@ -125,13 +179,22 @@ function updateCounts(): void {
     el.textContent = `${files} files · ${state.code.nodes.length} symbols`;
   } else {
     const graph = activeGraph();
-    el.textContent = graph ? `${graph.meta.nodeCount} nodes · ${graph.meta.edgeCount} links` : "";
+    const raw = rawGraph();
+    if (!graph) { el.textContent = ""; return; }
+    const unit = tools.depth > 0 ? "groups" : "nodes";
+    const link = tools.depth > 0 ? "bundles" : "links";
+    // Say what was rolled away, so a smaller number never reads as a smaller repo.
+    const of = raw && raw.nodes.length !== graph.nodes.length ? ` of ${raw.nodes.length} symbols` : "";
+    el.textContent = `${graph.nodes.length} ${unit} · ${graph.edges.length} ${link}${of}`;
   }
 }
 
 /* ---------- detail panel ---------- */
 function showDetail(id: string | null): void {
-  renderDetail($("detail"), state.tab === "context" ? state.context : state.code, graphTab(), id, (next) => {
+  // The graph on screen, not the raw one: a rolled-up bubble's id exists only in
+  // the grouped graph, so looking it up in the raw one left the panel empty for
+  // every module the reader clicked.
+  renderDetail($("detail"), state.tab === "outline" ? state.code : activeGraph(), graphTab(), id, (next) => {
     if (state.tab === "outline") {
       showDetail(next);
       renderOutline($("tree"), state.code!, next, state.outlineOpen, showDetail);
@@ -141,7 +204,75 @@ function showDetail(id: string | null): void {
   });
 }
 
-view.onSelect = (id) => showDetail(id);
+view.onSelect = (id) => { if (!maybeCompletePath(id)) showDetail(id); };
+
+/**
+ * Ctrl/⌘-click: hang the whole graph off this node.
+ *
+ * A plain click rings a node's own neighbours, which answers "what does THIS
+ * touch". The question after that is "and what do those touch" — one modifier
+ * away rather than behind a mode nobody would think to switch to, because the
+ * node you want at the centre is the one already under the pointer.
+ */
+view.onOrbit = (id) => {
+  tools.orbitRoot = id;
+  tools.layout = "orbit";
+  ($("layoutSel") as HTMLSelectElement).value = "orbit";
+  // Selected, but NOT arranged: the orbit tree is about to place this node's
+  // children around it, and ringing them would undo that on the spot.
+  view.select(id, { arrange: false });
+  // Re-lay in place rather than through `applyTools`, which rebuilds the dataset
+  // and makes the new arrangement arrive rather than travel. Falls back to the
+  // rebuild if the layout cannot be computed at all.
+  if (!view.orbitTo(id)) applyTools();
+};
+
+/**
+ * What actually makes two things relate.
+ *
+ * A bundle between two modules used to say only "these are connected", which is
+ * the least useful half of the fact — the reader's next question is always
+ * *which* call, so they know the one line to open or the one dependency to break.
+ * The grouping keeps the real symbol pairs on the bundle; this renders them,
+ * resolved back to names through the ungrouped graph, and clicking one jumps to
+ * that symbol.
+ */
+view.onSelectEdge = (edge) => {
+  const host = $("detail");
+  if (!edge) { showDetail(view.selected); return; }
+  const shown = activeGraph();
+  const raw = rawGraph();
+  const nameIn = (g: VizGraph | null, id: string): string =>
+    g?.nodes.find((n) => n.id === id)?.name ?? id.split("#").pop() ?? id;
+  const endpoint = (id: string): string => escapeText(nameIn(shown, id));
+  const verb = escapeText(edge.relation.replace(/_/g, " "));
+
+  const rows = (edge.members ?? []).map((m) => {
+    const path = raw?.nodes.find((n) => n.id === m.source)?.path ?? "";
+    return `<li><button class="linkbtn" data-goto="${escapeText(m.source)}">${escapeText(nameIn(raw, m.source))}</button>`
+      + ` <span class="verb">${verb}</span> `
+      + `<button class="linkbtn" data-goto="${escapeText(m.target)}">${escapeText(nameIn(raw, m.target))}</button>`
+      + (path ? `<div class="where">${escapeText(path)}</div>` : "")
+      + `</li>`;
+  });
+
+  host.innerHTML =
+    `<div class="edgehead"><b>${endpoint(edge.source)}</b> <span class="verb">${verb}</span> <b>${endpoint(edge.target)}</b></div>`
+    + (edge.weight && edge.weight > 1 ? `<div class="edgesub">${edge.weight} references</div>` : "")
+    + (rows.length
+      ? `<ul class="edgelist">${rows.join("")}</ul>`
+        + (edge.moreMembers ? `<div class="edgesub">and ${edge.moreMembers} more</div>` : "")
+      : `<div class="edgesub">A single reference.</div>`);
+
+  for (const b of host.querySelectorAll<HTMLButtonElement>("[data-goto]")) {
+    b.addEventListener("click", () => {
+      const id = b.dataset.goto!;
+      // The symbol lives in the ungrouped graph; drop the grouping to reach it.
+      if (!shown?.nodes.some((n) => n.id === id)) { tools.depth = 0; applyTools(); }
+      view.focus(id);
+    });
+  }
+};
 
 /* ---------- tabs ---------- */
 function setTab(tab: Tab): void {
@@ -149,6 +280,11 @@ function setTab(tab: Tab): void {
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => {
     b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
   });
+  // Drop the previous tab's derived graph before anything reads it: `activeGraph`
+  // answers from it, and a stale one would have the code tab measuring, grouping
+  // and drawing the context tab's nodes.
+  tools.shown = null;
+  tools.adjacency = null;
   const isOutline = tab === "outline";
   $("canvasWrap").hidden = isOutline;
   $("outlineView").hidden = !isOutline;
@@ -166,7 +302,7 @@ function setTab(tab: Tab): void {
       showEmpty("No code graph yet — run <code>graft graph</code> to generate <span class=\"mono\">graph.json</span>.");
     }
   } else {
-    const graph = activeGraph();
+    const graph = rawGraph();
     if (!graph || graph.nodes.length === 0) {
       // A graph that exists but holds no nodes used to fall through to the canvas
       // and render nothing at all — worst on an exported page, where the reader
@@ -179,9 +315,13 @@ function setTab(tab: Tab): void {
         : "No context graph — run <code>graft init</code> first."));
     } else {
       empty.hidden = true;
-      view.resetView();
-      view.setData(graph, graphTab());
-      view.reheat();
+      // A fresh tab starts un-drilled, and large graphs start grouped.
+      tools.scope = undefined;
+      tools.pathFrom = null;
+      view.spotlight = null;
+      tools.hideOrphans = graph.nodes.length > AUTO_GROUP_NODES;
+      tools.depth = depthFor(undefined);
+      applyTools();
     }
   }
   renderChips();
@@ -287,6 +427,281 @@ resizer.addEventListener("keydown", (ev) => {
   ev.preventDefault();
 });
 
+
+/* ---------- grouping, layout, and the analysis tools ---------- */
+
+/**
+ * Recompute what is on the canvas from `tools`, then hand it to the renderer.
+ *
+ * The single funnel: every control below changes `tools` and calls this, so there
+ * is exactly one place where "what the reader asked for" becomes "what is drawn",
+ * and no way for a chip, a legend and a finding to disagree about which graph
+ * they are describing.
+ */
+function applyTools(): void {
+  const raw = rawGraph();
+  if (!raw) return;
+  const shown = groupGraph(raw, { depth: tools.depth, scope: tools.scope, hideOrphans: tools.hideOrphans });
+  tools.shown = shown;
+  tools.adjacency = buildAdjacency(shown);
+  // A finding names ids from the previous view; keep only the ones that survived.
+  if (view.spotlight) {
+    const alive = new Set(shown.nodes.map((n) => n.id));
+    const kept = new Set([...view.spotlight].filter((id) => alive.has(id)));
+    view.spotlight = kept.size ? kept : null;
+  }
+
+  view.setData(shown, graphTab());
+  const positions = staticLayout(tools.layout, shown, tools.depth || 2, view.radii, tools.orbitRoot);
+  if (positions) view.useStaticPositions(positions);
+  else view.reheat();
+  view.resetView();
+
+  renderGroupOptions(raw);
+  ($("layoutSel") as HTMLSelectElement).value = tools.layout;
+  renderCrumbs();
+  setLayer(tools.layerPinned ? tools.layer : defaultLayer());
+  renderChips();
+  renderLegend();
+  updateShownCount();
+  updateCounts();
+  $("orphanChip").className = "echip" + (tools.hideOrphans ? "" : " on");
+  $("clearBtn").hidden = view.spotlight === null;
+}
+
+/** Depth options are the levels this repo actually has, not a fixed list. */
+function renderGroupOptions(raw: VizGraph): void {
+  const sel = $("groupSel") as HTMLSelectElement;
+  const depths = availableDepths(raw);
+  const wanted = String(tools.depth);
+  const options = ["0", ...depths.map(String)];
+  if (sel.dataset.built !== options.join(",")) {
+    sel.innerHTML = "";
+    for (const d of options) {
+      const o = document.createElement("option");
+      o.value = d;
+      o.textContent = d === "0" ? "symbols"
+        : Number(d) >= fileRungOf(raw) ? "files"
+          : d === "1" ? "top level" : `${d} levels`;
+      sel.appendChild(o);
+    }
+    sel.dataset.built = options.join(",");
+  }
+  sel.value = options.includes(wanted) ? wanted : "0";
+}
+
+/** Where in the tree we have drilled to, and the way back out. */
+function renderCrumbs(): void {
+  const host = $("crumbs");
+  host.innerHTML = "";
+  if (!tools.scope) { host.hidden = true; return; }
+  host.hidden = false;
+  const parts = tools.scope.split("/");
+  const add = (label: string, target: string | undefined): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.addEventListener("click", () => goTo(target));
+    host.appendChild(b);
+  };
+  add("all", undefined);
+  parts.forEach((part, i) => {
+    const sep = document.createElement("span");
+    sep.className = "sep";
+    sep.textContent = "/";
+    host.appendChild(sep);
+    add(part, parts.slice(0, i + 1).join("/"));
+  });
+}
+
+/** One line saying what was found, or nothing at all. */
+function showFinding(html: string | null): void {
+  const el = $("finding");
+  if (!html) { el.hidden = true; el.innerHTML = ""; return; }
+  el.innerHTML = html;
+  el.hidden = false;
+}
+
+function setSpotlight(ids: Set<string> | null, message: string | null): void {
+  view.spotlight = ids;
+  view.restyle();
+  showFinding(message);
+  $("clearBtn").hidden = ids === null;
+}
+
+/**
+ * The grouping depth that makes sense inside a given scope.
+ *
+ * Depth counts significant directory segments from the REPO ROOT, not from the
+ * scope, so drilling could not just add one and hope: inside `CMU_LIBS/elmMcl`,
+ * whose files live in `headers/` and `sources/` — both ignored as file-type
+ * conventions — every path still has exactly two significant segments, so any
+ * depth at all rolled the whole module into a single bubble containing everything
+ * and no edges. Which is what "1 groups · 0 bundles" was.
+ *
+ * So: one level deeper when there IS a level deeper, and the symbols themselves
+ * when there is not. Opening a folder should always show you its contents.
+ */
+function depthFor(scope: string | undefined): number {
+  const raw = rawGraph();
+  if (!raw) return 0;
+  if (!scope) return raw.nodes.length > AUTO_GROUP_NODES ? Math.min(2, availableDepths(raw).length) : 0;
+  const inside = raw.nodes.filter((n) => {
+    const p = pathOf(n);
+    return p === scope || p.startsWith(`${scope}/`);
+  });
+  if (inside.length === 0) return 0;
+
+  let deepest = 0;
+  const files = new Set<string>();
+  for (const n of inside) {
+    const p = pathOf(n);
+    deepest = Math.max(deepest, significantDirs(p).length);
+    files.add(p);
+  }
+
+  const base = scope.split("/").length;
+  // One rung at a time: another directory level if there is one, then the files,
+  // then the symbols themselves. Each double-click descends exactly one step, all
+  // the way down, instead of jumping from a module straight to four hundred
+  // functions with nothing in between.
+  if (base < deepest) return base + 1;
+  if (files.size > 1 && !files.has(scope)) return fileRungOf(raw);
+  return 0;
+}
+
+/** Move to a scope and pick the depth that shows its contents. */
+function goTo(scope: string | undefined): void {
+  tools.scope = scope;
+  tools.depth = depthFor(scope);
+  tools.pathFrom = null;
+  view.spotlight = null;
+  showFinding(null);
+  applyTools();
+}
+
+// Clicking a bubble means "go in there", the same gesture as opening a folder.
+view.onDrill = (prefix) => goTo(prefix);
+
+($("groupSel") as HTMLSelectElement).addEventListener("change", (ev) => {
+  tools.depth = Number((ev.target as HTMLSelectElement).value);
+  applyTools();
+});
+($("layoutSel") as HTMLSelectElement).addEventListener("change", (ev) => {
+  tools.layout = (ev.target as HTMLSelectElement).value as LayoutMode;
+  applyTools();
+});
+$("orphanChip").addEventListener("click", () => {
+  tools.hideOrphans = !tools.hideOrphans;
+  applyTools();
+});
+
+/**
+ * Code edges and file edges answer different questions, so you look at one at a
+ * time.
+ *
+ * `imports` — a TypeScript import, a Rust `use`, a C `#include` — relates two
+ * FILES. `calls` relates two SYMBOLS. Folded together, 13,591 call edges sat
+ * under a wall of include lines and neither could be read. Nothing here is
+ * language-specific: it keys on the relation graft already emits.
+ */
+/**
+ * The layer to start a view on, until the reader says otherwise.
+ *
+ * Rolled up, a module's dependencies are mostly its INCLUDES — that is what one
+ * C++ component using another looks like — so defaulting to the code layer left
+ * heavily-used modules with no inbound edges at all: elmSql, included by fifteen
+ * others, drew as an island. Drilled down to symbols the opposite holds, and the
+ * include wall is what buries the calls. So the default follows the altitude.
+ */
+function defaultLayer(): Layer | "all" {
+  return tools.depth > 0 ? "all" : "code";
+}
+
+function setLayer(layer: Layer | "all"): void {
+  const graph = activeGraph();
+  if (!graph) return;
+  tools.layer = layer;
+  view.hiddenRels = {};
+  if (layer !== "all") {
+    for (const e of graph.edges) {
+      if (layerOf(e.relation) !== layer) view.hiddenRels[chipKey(e.relation)] = true;
+    }
+  }
+  for (const b of document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
+    b.className = "echip" + (b.dataset.layer === layer ? " on" : "");
+  }
+  renderChips();
+  view.restyle();
+  updateShownCount();
+}
+
+for (const b of document.querySelectorAll<HTMLButtonElement>("[data-layer]")) {
+  b.addEventListener("click", () => {
+    tools.layerPinned = true;
+    setLayer(b.dataset.layer as Layer | "all");
+  });
+}
+
+$("cyclesBtn").addEventListener("click", () => {
+  if (!tools.adjacency) return;
+  const cycles = findCycles(tools.adjacency);
+  if (cycles.length === 0) { setSpotlight(null, "No dependency cycles in this view."); return; }
+  const ids = new Set(cycles.flat());
+  const biggest = cycles[0].length;
+  setSpotlight(ids, `<b>${cycles.length}</b> dependency ${cycles.length === 1 ? "cycle" : "cycles"}, largest <b>${biggest}</b> nodes.`);
+});
+
+$("hubsBtn").addEventListener("click", () => {
+  if (!tools.adjacency) return;
+  const top = hubs(tools.adjacency, 20);
+  if (top.length === 0) { setSpotlight(null, "Nothing in this view is connected."); return; }
+  setSpotlight(
+    new Set(top.map((h) => h.id)),
+    `Top <b>${top.length}</b> by connections — highest: <b>${escapeText(nameOf(top[0].id))}</b> (${top[0].degree}).`,
+  );
+});
+
+$("lensBtn").addEventListener("click", () => {
+  if (!tools.adjacency || !view.selected) { showFinding("Select a node first, then press lens."); return; }
+  const ids = neighborhood(tools.adjacency, view.selected, LENS_HOPS);
+  setSpotlight(ids, `<b>${ids.size}</b> within ${LENS_HOPS} hops of <b>${escapeText(nameOf(view.selected))}</b>.`);
+});
+
+// Two clicks, because a path needs two ends: the first press remembers the
+// selection, the next selection completes it.
+$("pathBtn").addEventListener("click", () => {
+  if (!view.selected) { showFinding("Select one end of the path, then press path."); return; }
+  tools.pathFrom = view.selected;
+  showFinding(`From <b>${escapeText(nameOf(view.selected))}</b> — now select the other end.`);
+});
+
+$("clearBtn").addEventListener("click", () => {
+  tools.pathFrom = null;
+  setSpotlight(null, null);
+});
+
+function nameOf(id: string): string {
+  return activeGraph()?.nodes.find((n) => n.id === id)?.name ?? id;
+}
+
+/** Completing a pending path, when a second node is chosen. */
+function maybeCompletePath(id: string | null): boolean {
+  if (!tools.pathFrom || !id || !tools.adjacency || id === tools.pathFrom) return false;
+  const from = tools.pathFrom;
+  tools.pathFrom = null;
+  const path = shortestPath(tools.adjacency, from, id);
+  if (path.length === 0) {
+    setSpotlight(null, `No path from <b>${escapeText(nameOf(from))}</b> to <b>${escapeText(nameOf(id))}</b> — nothing depends that way round.`);
+    return true;
+  }
+  setSpotlight(
+    new Set(path),
+    `<b>${path.length - 1}</b> ${path.length === 2 ? "hop" : "hops"}: ${path.map((p) => escapeText(nameOf(p))).join(" → ")}`,
+  );
+  return true;
+}
+
 /* ---------- data loading + live reload ---------- */
 async function loadAll(): Promise<void> {
   const [context, code] = await Promise.all([loadContextGraph(), loadCodeGraph()]);
@@ -295,6 +710,9 @@ async function loadAll(): Promise<void> {
   // The subtitle only exists on an exported page (`graft viz --export --title`),
   // where the same file is published per pull request and the reader needs to know
   // WHICH one they opened.
+  // The code graph is assembled from wiring.json, which carries no repo name — but
+  // the repo-root group is named from it, so carry it across.
+  if (code) code.meta.repoName = context.meta.repoName;
   const where = [context.meta.repoName, context.meta.subtitle].filter(Boolean).join(" · ");
   $("repoName").textContent = where;
   document.title = `graft viz — ${where}`;
@@ -318,5 +736,16 @@ onServerChange(() => {
     if (selected) { view.selected = selected; view.restyle(); showDetail(selected); }
   });
 });
+
+/**
+ * A handle on the live view, for driving the page from outside it.
+ *
+ * The canvas has no DOM to inspect: everything a reader sees is one bitmap, so
+ * "is the ring too far out" cannot be answered by reading elements the way it
+ * could on an SVG or HTML tree. This hook is how a headless browser measures
+ * what was actually drawn — the same thing the reader is looking at, in world
+ * coordinates — instead of the numbers a formula was supposed to produce.
+ */
+(globalThis as unknown as { __graft?: unknown }).__graft = { view, tools };
 
 void loadAll();
