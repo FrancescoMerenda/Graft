@@ -136,6 +136,38 @@ export function textWidthIn(shape: Shape, r: number): number {
 }
 
 /**
+ * How far `shape`'s outline sits from its centre along `angle`.
+ *
+ * A circle answers `r` in every direction; nothing else does. Trimming an edge
+ * by the node radius therefore left every arrow either buried under a polygon or
+ * floating away from it, depending on which way the edge happened to leave — and
+ * the error is largest exactly where the shape differs most from a circle, which
+ * is where a reader most needs the arrow to land on an edge they can see.
+ *
+ * A regular n-gon of circumradius R has apothem R·cos(π/n); between two vertices
+ * its outline is that apothem divided by the cosine of the angle off the facet's
+ * own normal — the standard polygon support function, which is exact rather than
+ * an approximation of the drawn path.
+ */
+export function radiusAt(shape: Shape, radius: number, angle: number): number {
+  const R = sizedFor(shape, radius);
+  if (shape === "circle") return R;
+  if (shape === "square") {
+    // Drawn as an axis-aligned rect inscribed in R, so its half-extent is R/√2
+    // and the outline is that over whichever axis dominates.
+    const h = R * Math.SQRT1_2;
+    return h / Math.max(Math.abs(Math.cos(angle)), Math.abs(Math.sin(angle)));
+  }
+  const sides = sidesOf(shape);
+  const rotation = shape === "diamond" ? 0 : -Math.PI / 2;
+  const step = (Math.PI * 2) / sides;
+  // Fold the angle into one facet, measured from that facet's normal.
+  let a = (angle - rotation) % step;
+  if (a < 0) a += step;
+  return (R * Math.cos(Math.PI / sides)) / Math.cos(a - step / 2);
+}
+
+/**
  * Append one shape of radius `r` at `(x, y)` to a path.
  *
  * Sized so its AREA matches a circle of radius `r`, not so it fits inside one.

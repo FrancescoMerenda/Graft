@@ -130,6 +130,35 @@ export function chipKey(rel: string): string {
   return rel.replace(/_/g, " ");
 }
 
+/**
+ * The same relation, said from the other end.
+ *
+ * An edge into the selected node and an edge out of it are different facts, and
+ * labelling both "calls" makes the picture say the opposite of the truth half the
+ * time. Colour already separates them; the words have to agree with the colour.
+ */
+const PASSIVE: Record<string, string> = {
+  calls: "called by",
+  uses: "used by",
+  depends_on: "depended on by",
+  imports: "included by",
+  extends: "extended by",
+  implements: "implemented by",
+  references: "referenced by",
+  produces: "produced by",
+  configures: "configured by",
+  validates: "validated by",
+  contains: "part of",
+  part_of: "contains",
+};
+
+/** How to say `rel` from the selected node's point of view: `out` = it does this
+ * to the other node, `in` = the other node does it to it. */
+export function verbFor(rel: string, direction: "out" | "in"): string {
+  if (direction === "out") return rel.replace(/_/g, " ");
+  return PASSIVE[rel] ?? `${rel.replace(/_/g, " ")} by`;
+}
+
 /** Hover hint: the question the verb answers for someone building or reviewing code. */
 export const CHIP_HINT: Record<string, string> = {
   "part of": "where does this live? (contains, part of)",

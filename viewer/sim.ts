@@ -44,6 +44,12 @@ export class LayoutDriver {
   private inline: Layout | null = null;
   private inlineTimer = 0;
   private count = 0;
+  /** True while an exact layout owns `positions` — see `receive` and `setStatic`. */
+  private frozen = false;
+  /** The last spec handed to the layout, so a frozen picture can be handed BACK to
+   * the simulation from where it currently is rather than from where the
+   * simulation last left it. */
+  private spec: SimSpec | null = null;
 
   constructor() {
     const source = workerSource();
@@ -62,9 +68,14 @@ export class LayoutDriver {
   }
 
   private receive(msg: FromWorker): void {
+    // A frame already in flight when `setStatic` stopped the worker still arrives,
+    // and copying it would overwrite an exact layout with a half-settled force one
+    // — which is how a tree layout that provably does not overlap ended up drawn
+    // with bubbles on top of each other. The buffer is still handed back, so the
+    // worker keeps its pair and can resume the moment the layout is reheated.
     const incoming = new Float32Array(msg.buffer);
-    if (incoming.length === this.positions.length) this.positions.set(incoming);
-    this.hot = msg.hot;
+    if (!this.frozen && incoming.length === this.positions.length) this.positions.set(incoming);
+    this.hot = this.frozen ? false : msg.hot;
     this.post({ type: "return", buffer: msg.buffer }, [msg.buffer]);
     this.onFrame();
   }
@@ -80,6 +91,8 @@ export class LayoutDriver {
   }
 
   setData(spec: SimSpec): void {
+    this.frozen = false;
+    this.spec = spec;
     this.count = spec.count;
     this.positions = new Float32Array(spec.positions);
     this.stopInline();
@@ -126,13 +139,49 @@ export class LayoutDriver {
    */
   setStatic(positions: Float32Array<ArrayBufferLike>): void {
     this.stopInline();
+    this.frozen = true;
     this.post({ type: "stop" });
     this.positions = positions;
     this.hot = false;
     this.onFrame();
   }
 
+  /** True while an exact layout owns the positions and no simulation is running —
+   * the caller has to keep nodes apart itself. */
+  get isStatic(): boolean {
+    return this.frozen;
+  }
+
+  /**
+   * Hand the picture on screen back to the simulation.
+   *
+   * A static layout stops the simulation, which keeps its bodies wherever they
+   * were when it was stopped — so plain `reheat` resumes a layout nobody is
+   * looking at any more, and everything jumps. Worse, while it was stopped
+   * nothing pushed nodes apart at all: a reader could drag one bubble on top of
+   * another and it would simply stay there. Restating the current positions first
+   * is what makes dragging behave the same in every layout mode.
+   */
+  resume(alpha = 0.3): void {
+    if (!this.frozen || !this.spec) { this.reheat(alpha); return; }
+    this.frozen = false;
+    const spec: SimSpec = { ...this.spec, positions: Float32Array.from(this.positions) };
+    this.spec = spec;
+    this.positions = Float32Array.from(this.positions);
+    if (this.worker) {
+      this.post({ type: "data", spec });
+      this.post({ type: "reheat", alpha });
+      return;
+    }
+    this.stopInline();
+    this.inline = new Layout(spec);
+    this.inline.reheat(alpha);
+    this.hot = true;
+    this.runInline();
+  }
+
   reheat(alpha = 0.6): void {
+    this.frozen = false;
     if (this.worker) { this.post({ type: "reheat", alpha }); return; }
     this.inline?.reheat(alpha);
     if (this.inline && !this.hot) { this.hot = true; this.runInline(); }

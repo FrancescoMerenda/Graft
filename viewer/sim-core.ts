@@ -105,9 +105,17 @@ export class Layout {
       // frame a few strays. Two axis springs cost one multiply per node per tick.
       .force("gx", forceX<Body>(spec.width / 2).strength(0.015))
       .force("gy", forceY<Body>(spec.height / 2).strength(0.015));
-    // Two passes rather than one: a single pass leaves visible overlap in the
-    // dense core of a real wiring graph, which is exactly where people look.
-    this.sim.force("collide", forceCollide<Body>().radius((b) => b.r + 14).iterations(2));
+    // Several passes rather than one: a single pass leaves visible overlap in the
+    // dense core of a real wiring graph, which is exactly where people look. Two
+    // was still not enough — springs and charge overpower it while alpha is high,
+    // and whatever is still overlapping when the layout goes cold stays that way,
+    // because nothing runs afterwards to fix it. Collision is also the one force
+    // here that must never be a suggestion: two bubbles sharing a spot is not a
+    // rougher answer than the right one, it is an unreadable one.
+    this.sim.force(
+      "collide",
+      forceCollide<Body>().radius((b) => b.r + 14).iterations(4).strength(1),
+    );
   }
 
   /** Advance the layout. `alpha` decays exactly as it would under d3's own timer. */

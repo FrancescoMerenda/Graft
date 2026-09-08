@@ -25,13 +25,13 @@
  * incoming teal ("depended on by"), labels the verbs on just those edges,
  * and fades the rest of the graph.
  */
-import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colorToken, cvar } from "./data.js";
-import { groupPalette, shapeOf, shapePath, sizedFor, textWidthIn, type Shape } from "./palette.js";
+import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colorToken, cvar, verbFor } from "./data.js";
+import { groupPalette, radiusAt, shapeOf, shapePath, sizedFor, textWidthIn, type Shape } from "./palette.js";
 import { significantDirs } from "./aggregate.js";
 import { initials } from "./detail.js";
 import { LayoutDriver } from "./sim.js";
 import type { SimSpec } from "./sim-core.js";
-import { seedPositions } from "./layouts.js";
+import { seedPositions, orbitLayout } from "./layouts.js";
 
 /** A node as the renderer needs it. Positions live in the layout's flat buffer,
  * never here — copying 26k pairs into objects every frame is exactly the per-tick
@@ -66,6 +66,11 @@ interface SimEdge {
   s: number;
   t: number;
   relation: string;
+  /** How far this edge bows off the straight line between its ends, signed.
+   * Several edges between the same two nodes fan out instead of being drawn on
+   * top of each other — which is what made a pair joined by both `calls` and
+   * `imports` look like one edge wearing whichever label was painted last. */
+  bow: number;
   description?: string;
   confidence?: string;
   /** Edges behind a rolled-up bundle; drives stroke width. */
@@ -112,6 +117,19 @@ const INSIDE_LABEL_MAX = 22;
 const ARROW_MIN_K = 0.9;
 const MAX_ARROWS = 3000;
 
+/** How far a lone edge bows off the straight line, and how far apart the lanes
+ * sit when several edges share a pair of nodes. */
+const BOW = 10;
+const BOW_STEP = 26;
+
+/** The gap an edge leaves between its end and the outline it points at: enough
+ * to read as touching rather than piercing, at every zoom. */
+const EDGE_GAP = 4;
+
+/** The widest ring a node can wear (see `paintRings`), so an edge into a selected
+ * node stops outside its ring instead of under it. */
+const RING_PAD = 7;
+
 /** How far past the quartiles a point may sit and still be framed. 1.5 is Tukey's
  * own constant and is what "outlier" conventionally means. */
 const FENCE = 1.5;
@@ -146,9 +164,24 @@ const MINIMAP_SAMPLES = 3000;
 const BADGE_MIN_K = 0.8;
 
 /** Breathing room between neighbours on a focus ring, in world units. */
-const RING_GAP = 30;
+const RING_GAP = 12;
 /** How much wider than the exact fit a focus ring is drawn. */
-const RING_EASE = 1.25;
+const RING_EASE = 1.05;
+
+/** Breathing room left between two nodes when one is pushed clear of another, how
+ * many times one node may be shoved in a single drag frame, and the total number
+ * of shoves that frame is allowed. */
+const SEPARATION_GAP = 6;
+
+/** How many times an evicted node may step further out looking for a clear spot
+ * before it settles for where it got to. */
+const EVICT_STEPS = 24;
+const MAX_PUSHES = 3;
+const SEPARATION_BUDGET = 400;
+
+/** The empty wedge left at each side of the ring, separating "what this depends
+ * on" above from "what depends on this" below. */
+const ARC_SPLIT = Math.PI * 0.09;
 /** How long a rearrangement takes to travel, in milliseconds. */
 const TWEEN_MS = 480;
 
@@ -276,6 +309,10 @@ export class GraphView {
   private hover = -1;
   private hoverQueued = false;
   /** Nodes the reader has placed by hand. They stay put until released. */
+  /** The graph as handed over, kept so a layout can be recomputed in place —
+   * `orbitLayout` needs the edges by id, which the packed sim arrays no longer
+   * carry. */
+  private graph: VizGraph | null = null;
   private pinned = new Set<number>();
   /** Nodes currently held in a ring around the selection. Released when the
    * selection changes, unless the reader had pinned them themselves. */
@@ -307,6 +344,8 @@ export class GraphView {
    * it never changes which nodes are on the canvas. */
   showOwners = true;
   onSelect: (id: string | null) => void = () => {};
+  /** Ctrl/⌘-click: re-lay the whole graph as a tree of orbits rooted here. */
+  onOrbit: (id: string) => void = () => {};
   /** A group bubble was clicked: the caller decides what drilling in means. */
   onDrill: (prefix: string) => void = () => {};
   /** An edge was clicked, or the selection was cleared. Carries the real symbol
@@ -353,6 +392,7 @@ export class GraphView {
   /** Load (or morph into) a new dataset. Nodes keep their positions by id. */
   setData(graph: VizGraph, tab: "context" | "code"): void {
     this.tab = tab;
+    this.graph = graph;
     const prevIndex = this.index;
     const prevPos = this.layout.positions;
 
@@ -376,7 +416,12 @@ export class GraphView {
       const r = n.count
         ? 14 + Math.min(52, Math.sqrt(n.count) * 3.4)
         : 11 + Math.min(13, d * 2.6);
-      radii[i] = r;
+      // What the SIM is told is the radius of what gets DRAWN, which for every
+      // shape but a circle is larger than `r` — a triangle covers the same area
+      // by reaching 1.55x further out. Collision, spring length and repulsion all
+      // read this, so telling them the circle radius is precisely why triangles
+      // and squares still spawned on top of each other.
+      radii[i] = sizedFor(shapeOf(n.type), r);
       return {
         id: n.id, name: n.name, type: n.type, owners: n.owners, deg: d, r,
         path: n.path, count: n.count,
@@ -412,7 +457,7 @@ export class GraphView {
       const t = this.index.get(e.target);
       if (s === undefined || t === undefined) continue;
       this.edges.push({
-        s, t, relation: e.relation, description: e.description, confidence: e.confidence,
+        s, t, relation: e.relation, bow: 0, description: e.description, confidence: e.confidence,
         weight: e.weight, members: e.members, moreMembers: e.moreMembers,
       });
       links.push(s, t);
@@ -421,6 +466,8 @@ export class GraphView {
       // the big one swallows the link.
       distances.push(REST[famOf(e.relation)] * 1.6 + radii[s] + radii[t]);
     }
+
+    this.fanOut();
 
     const spec: SimSpec = {
       count,
@@ -433,6 +480,12 @@ export class GraphView {
     };
     this.pinned.clear();
     this.arranged.clear();
+    // Every index below points into the OLD node array. Drilling into a group
+    // swaps in a smaller one, so a hover left over from the previous graph is a
+    // read past the end — `paintRings` crashed on exactly that. The selected edge
+    // holds two such indices of its own.
+    this.hover = -1;
+    this.selectedEdge = null;
     this.tween = [];
     this.hubIndices = this.nodes
       .map((n, i) => [i, n.deg] as const)
@@ -495,10 +548,23 @@ export class GraphView {
     this.dirty = true;
   }
 
-  select(id: string | null): void {
+  /**
+   * Select a node — and, unless told otherwise, ring its neighbours around it.
+   *
+   * `arrange: false` is for a selection the VIEW makes on the reader's behalf:
+   * right after a ctrl-click re-roots the orbit layout, ringing the new root would
+   * pull its children straight back out of the tree just built for them. It pans
+   * to the node instead, at the same zoom.
+   *
+   * A selection the reader makes by clicking always arranges, in every layout
+   * mode. Gating that on the mode meant one ctrl-click turned ordinary clicking
+   * off for good, which is not a trade anybody agreed to.
+   */
+  select(id: string | null, opts: { arrange?: boolean } = {}): void {
     this.selected = id;
     if (id !== null) this.selectedEdge = null;
-    this.arrangeAround(id === null ? -1 : this.index.get(id) ?? -1);
+    if (opts.arrange ?? true) this.arrangeAround(id === null ? -1 : this.index.get(id) ?? -1);
+    else if (id !== null) this.centerOn(id);
     this.restyle();
     this.onSelect(id);
   }
@@ -541,11 +607,7 @@ export class GraphView {
       const pos = this.layout.positions;
       const cx = pos[center * 2];
       const cy = pos[center * 2 + 1];
-      // Top arc for callees, bottom for callers. Canvas y grows downward, so the
-      // top half is the negative one.
-      const rOut = this.placeArc([...outs], center, cx, cy, -Math.PI, 0, targets);
-      const rIn = this.placeArc([...ins], center, cx, cy, 0, Math.PI, targets);
-      const ring = Math.max(rOut, rIn);
+      const ring = this.placeRing([...outs], [...ins], center, cx, cy, targets);
       if (targets.size > 0) {
         targets.set(center, [cx, cy]);
         this.clearSpace(center, cx, cy, ring, targets);
@@ -580,18 +642,66 @@ export class GraphView {
   ): void {
     const pos = this.layout.positions;
     const keepOut = ring + RING_GAP * 2;
+    const evicted: { i: number; angle: number }[] = [];
     for (let i = 0; i < this.nodes.length; i++) {
       if (i === center || targets.has(i) || this.pinned.has(i)) continue;
       if (this.hiddenTypes[this.nodes[i].type]) continue;
       const dx = pos[i * 2] - cx;
       const dy = pos[i * 2 + 1] - cy;
       const d = Math.hypot(dx, dy);
-      const want = keepOut + this.nodes[i].r;
-      if (d >= want) continue;
+      if (d >= keepOut + this.roomOf(i)) continue;
       // Directly on the centre: no bearing to keep, so pick one from its index —
       // deterministic, and spread out rather than all fleeing the same way.
-      const angle = d < 1e-3 ? (i * 2.39996) % (Math.PI * 2) : Math.atan2(dy, dx);
-      targets.set(i, [cx + Math.cos(angle) * want, cy + Math.sin(angle) * want]);
+      evicted.push({ i, angle: d < 1e-3 ? (i * 2.39996) % (Math.PI * 2) : Math.atan2(dy, dx) });
+    }
+    if (evicted.length === 0) return;
+
+    // Pushing each one straight out along its own bearing kept the picture
+    // recognisable and left them piled on each other: several bubbles that were
+    // spread across the middle share a bearing once they are all on one circle.
+    // So they keep their ORDER — sorted by bearing, nothing crosses anything — but
+    // take an even share of the circle, which is the same fit the ring itself uses.
+    evicted.sort((a, b) => a.angle - b.angle);
+    const width = (i: number) => (this.roomOf(i) + RING_GAP) * 2;
+    const total = evicted.reduce((n, e) => n + width(e.i), 0);
+    const widest = Math.max(...evicted.map((e) => this.roomOf(e.i)));
+    const radius = Math.max(keepOut + widest, total / (Math.PI * 2));
+
+    // Everything that is NOT moving is an obstacle. Spacing the evicted nodes
+    // against each other was not enough: the band they land on runs straight
+    // through whatever was already sitting out there, and since nothing puts a
+    // displaced node back, that overlap then survived every later selection.
+    const moving = new Set(evicted.map((e) => e.i));
+    const still: { x: number; y: number; r: number }[] = [];
+    for (let j = 0; j < this.nodes.length; j++) {
+      if (j === center || moving.has(j) || this.hiddenTypes[this.nodes[j].type]) continue;
+      if (targets.has(j)) continue; // a ring member: its target is checked below
+      still.push({ x: pos[j * 2], y: pos[j * 2 + 1], r: this.roomOf(j) });
+    }
+    for (const [j, [tx, ty]] of targets) still.push({ x: tx, y: ty, r: this.roomOf(j) });
+
+    // Start where the first evicted node already is, so the whole outer band is
+    // rotated to match where things were rather than to an arbitrary zero.
+    const from = evicted[0].angle;
+    let walked = 0;
+    for (const { i } of evicted) {
+      const angle = from + ((walked + width(i) / 2) / total) * Math.PI * 2;
+      walked += width(i);
+      const r = this.roomOf(i);
+      // Outward along its own bearing until it clears everything: the band is
+      // where it wants to be, not where it must be.
+      let at = radius;
+      for (let step = 0; step < EVICT_STEPS; step++) {
+        const x = cx + Math.cos(angle) * at;
+        const y = cy + Math.sin(angle) * at;
+        const hit = still.some((o) => Math.hypot(x - o.x, y - o.y) < r + o.r + SEPARATION_GAP);
+        if (!hit) break;
+        at += r + RING_GAP;
+      }
+      const x = cx + Math.cos(angle) * at;
+      const y = cy + Math.sin(angle) * at;
+      targets.set(i, [x, y]);
+      still.push({ x, y, r });
     }
   }
 
@@ -639,7 +749,7 @@ export class GraphView {
   private frameArrangement(targets: Map<number, [number, number]>): void {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const [i, [x, y]] of targets) {
-      const r = this.nodes[i].r;
+      const r = this.roomOf(i);
       minX = Math.min(minX, x - r); maxX = Math.max(maxX, x + r);
       minY = Math.min(minY, y - r); maxY = Math.max(maxY, y + r);
     }
@@ -655,35 +765,68 @@ export class GraphView {
     });
   }
 
-  /** Place `members` evenly along an arc, each taking room in proportion to its
-   * own size, and pin them there. */
-  private placeArc(
-    members: number[], center: number, cx: number, cy: number,
-    from: number, to: number, targets: Map<number, [number, number]>,
+  /**
+   * Put every neighbour on ONE ring, at the smallest radius that fits them all.
+   *
+   * Two independent arcs — callees over a half circle, callers under it — sized
+   * themselves separately, so eleven neighbours landed at 315 and twenty-eight at
+   * 861: the same relationship drawn at two distances, which reads as a random
+   * scatter rather than as a ring. Dealing the overflow onto extra rings had the
+   * same fault for the same reason.
+   *
+   * So the two sides SHARE a radius and split the circle in proportion to what
+   * each has to carry. The crowded side gets the arc it needs, the sparse side
+   * stays legible, every neighbour sits the same distance out, and that distance
+   * is the exact circumference fit — the closest a ring can be while holding
+   * everything side by side. Above and below still mean what they meant: what
+   * this depends on, and what depends on it.
+   */
+  private placeRing(
+    outs: number[], ins: number[], center: number, cx: number, cy: number,
+    targets: Map<number, [number, number]>,
   ): number {
+    const members = [...outs, ...ins];
     if (members.length === 0) return 0;
+
     // Same-module neighbours adjacent, biggest first within a module.
-    members.sort((a, b) =>
-      this.nodes[a].group.localeCompare(this.nodes[b].group) || this.nodes[b].r - this.nodes[a].r);
+    const order = (a: number, b: number): number =>
+      this.nodes[a].group.localeCompare(this.nodes[b].group) || this.roomOf(b) - this.roomOf(a);
+    outs.sort(order);
+    ins.sort(order);
 
-    const width = (i: number) => (this.nodes[i].r + RING_GAP) * 2;
-    const total = members.reduce((sum, i) => sum + width(i), 0);
-    const span = to - from;
-    const centreR = this.nodes[center].r;
-    const widest = Math.max(...members.map((i) => this.nodes[i].r));
-    // Big enough that the arc holds every member side by side, and never so close
-    // that the ring touches the centre node or itself. `total / span` is the exact
-    // fit; the extra factor is the difference between "does not overlap" and
-    // "reads as a ring", which is the point of arranging at all.
-    const radius = Math.max(centreR + widest + RING_GAP * 3, (total / span) * RING_EASE);
+    const width = (i: number) => (this.roomOf(i) + RING_GAP) * 2;
+    const sum = (list: number[]): number => list.reduce((n, i) => n + width(i), 0);
+    const wOut = sum(outs), wIn = sum(ins), total = wOut + wIn;
 
-    let walked = 0;
-    for (const i of members) {
-      const angle = from + ((walked + width(i) / 2) / total) * span;
-      walked += width(i);
-      targets.set(i, [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
-    }
-    return radius;
+    // Left and right stay empty, so the two halves read as two answers rather
+    // than as one uninterrupted circle.
+    const usable = Math.PI * 2 - ARC_SPLIT * 2;
+    const spanOut = outs.length === 0 ? 0 : ins.length === 0 ? usable : usable * (wOut / total);
+    const spanIn = usable - spanOut;
+
+    const widest = Math.max(...members.map((i) => this.roomOf(i)));
+    const radius = Math.max(
+      this.roomOf(center) + widest + RING_GAP * 2,
+      (total / usable) * RING_EASE,
+    );
+
+    const lay = (list: number[], from: number, span: number): void => {
+      const t = sum(list);
+      let walked = 0;
+      for (const i of list) {
+        const angle = from + ((walked + width(i) / 2) / t) * span;
+        walked += width(i);
+        targets.set(i, [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
+      }
+    };
+    // Canvas y grows downward, so the top half — what this depends on — is the
+    // negative one, and each arc is centred on its own pole.
+    lay(outs, -Math.PI / 2 - spanOut / 2, spanOut);
+    lay(ins, Math.PI / 2 - spanIn / 2, spanIn);
+    // The ring's OUTER edge, not its centre line: what gets evicted has to clear
+    // the widest bubble on the ring, not the circle it sits on, or a big neighbour
+    // and a bystander just outside the keep-out radius still overlap.
+    return radius + widest;
   }
 
   private selectEdge(edge: SimEdge | null): void {
@@ -787,6 +930,44 @@ export class GraphView {
   }
 
   /** Center the view on a node and select it (used by search). */
+  /**
+   * Re-lay the graph as a tree of orbits rooted at `id`, travelling there.
+   *
+   * Rebuilding the view instead — which is what this did — recomputes the whole
+   * dataset and drops the new positions in, so the graph teleports. A click that
+   * rings a node's neighbours glides them into place over half a second, and the
+   * reader can follow which bubble went where; re-rooting was the same kind of
+   * move and had no business looking like a different picture arriving. Same
+   * tween, same camera glide, no rebuild.
+   */
+  orbitTo(id: string): boolean {
+    if (!this.graph) return false;
+    const positions = orbitLayout(this.graph, this.graph.nodes, this.radii, id);
+    if (!positions) return false;
+    // Freeze first, from where things are now: an exact layout owns the buffer,
+    // and a simulation left running would fight the tween for it.
+    this.layout.setStatic(Float32Array.from(this.layout.positions));
+    const targets = new Map<number, [number, number]>();
+    for (let i = 0; i < this.nodes.length; i++) targets.set(i, [positions[i * 2], positions[i * 2 + 1]]);
+    // Nothing is pinned to its old place any more — the tree decides where
+    // everything goes, including whatever the reader had dragged aside.
+    this.pinned.clear();
+    this.arranged = new Set(targets.keys());
+    this.frameArrangement(targets);
+    this.beginTween(targets);
+    return true;
+  }
+
+  /** Bring a node to the middle of the canvas without changing the zoom. */
+  private centerOn(id: string): void {
+    const i = this.index.get(id);
+    if (i === undefined) return;
+    const pos = this.layout.positions;
+    const k = this.view.k;
+    this.userMoved = true; // a deliberate move; the auto-fit must not undo it
+    this.glideTo({ k, x: this.width / 2 - pos[i * 2] * k, y: this.height / 2 - pos[i * 2 + 1] * k });
+  }
+
   focus(id: string): void {
     const i = this.index.get(id);
     if (i === undefined) return;
@@ -930,8 +1111,7 @@ export class GraphView {
         // Moving a node is taking charge of the picture: the camera stops
         // second-guessing where the reader wants to be looking.
         this.userMoved = true;
-        this.layout.fix(hit, w.x, w.y);
-        this.layout.reheat(0.25);
+        this.dragMoved(hit, w.x, w.y);
       } else {
         pan = { x: ev.clientX - this.view.x, y: ev.clientY - this.view.y };
       }
@@ -941,8 +1121,7 @@ export class GraphView {
       if (drag) {
         moved = true;
         const w = this.toWorld(ev.clientX, ev.clientY);
-        this.layout.fix(drag.i, w.x, w.y);
-        this.layout.reheat(0.25);
+        this.dragMoved(drag.i, w.x, w.y);
         return;
       }
       if (pan) {
@@ -970,7 +1149,10 @@ export class GraphView {
         // module bubble could never be *looked at* — the graph was replaced before
         // its neighbourhood could be shown. Opening it is a double-click, the way
         // opening a folder always has been.
-        this.select(this.nodes[drag.i].id);
+        const id = this.nodes[drag.i].id;
+        this.select(id);
+        // …with a modifier, also make it the root everything else hangs off.
+        if (ev.ctrlKey || ev.metaKey) this.onOrbit(id);
       } else if (pan && !moved) {
         // Nothing under the pointer that was a node — try the edges before
         // treating it as a click on empty canvas.
@@ -1003,7 +1185,10 @@ export class GraphView {
         for (const i of this.pinned) this.layout.fix(i, null, null);
         this.pinned.clear();
       }
-      this.layout.reheat(0.3);
+      // An exact layout has no simulation to hand anything back to, and restarting
+      // one would trade the arrangement the reader is looking at for a different
+      // picture entirely. Unpinning is the whole of the answer there.
+      if (!this.layout.isStatic) this.layout.reheat(0.3);
       this.dirty = true;
     });
 
@@ -1438,8 +1623,11 @@ export class GraphView {
     // says the selection is somewhere in that area rather than on that node, and
     // on a crowded canvas that is the difference between an answer and a hint.
     const ring = (i: number, color: string, alpha: number, pad: number, width: number): void => {
-      if (i < 0 || this.hiddenTypes[this.nodes[i].type]) return;
+      // Bounds-checked as well as cleared on swap: a ring is drawn from state the
+      // reader controls (hover, pins, selection), and a stale index there must
+      // skip a ring, never take the frame down with it.
       const n = this.nodes[i];
+      if (i < 0 || n === undefined || this.hiddenTypes[n.type]) return;
       const path = new Path2D();
       shapePath(path, n.shape, pos[i * 2], pos[i * 2 + 1], n.r + pad);
       ctx.strokeStyle = rgba(color, alpha);
@@ -1464,38 +1652,198 @@ export class GraphView {
     this.arrowHead(pos, e, 1.4);
   }
 
-  /** Focused edges: own colour, arrowhead, and the verb spelled out. */
+  /**
+   * Focused edges: own colour, arrowhead, and the relationship spelled out from
+   * the selected node's point of view.
+   *
+   * A mutual pair — the same verb each way — is drawn once with a head at both
+   * ends. The reader asked "what does this touch"; two ropes between the same two
+   * bubbles answer it twice.
+   */
   private paintFocus(pos: Float32Array, focused: { e: SimEdge; role: "out" | "in" }[], k: number): void {
     if (focused.length === 0) return;
     const ctx = this.ctx;
-    for (const { e, role } of focused) {
+
+    // Pair up opposite edges of the same relation: they become one rope.
+    const byPair = new Map<string, { e: SimEdge; role: "out" | "in" }>();
+    const draw: { e: SimEdge; role: "out" | "in"; mutual: boolean }[] = [];
+    for (const f of focused) {
+      const other = f.role === "out" ? f.e.t : f.e.s;
+      const key = `${other}|${f.e.relation}`;
+      const twin = byPair.get(key);
+      if (twin && twin.role !== f.role) {
+        const slot = draw.find((d) => d.e === twin.e);
+        if (slot) { slot.mutual = true; continue; }
+      }
+      byPair.set(key, f);
+      draw.push({ ...f, mutual: false });
+    }
+
+    for (const { e, role, mutual } of draw) {
       const color = role === "out" ? this.theme.out : this.theme.in;
       const path = new Path2D();
       this.edgePath(path, pos, e);
-      ctx.strokeStyle = rgba(color, 0.95);
+      // A mutual edge belongs to neither direction, so it takes the neutral ink
+      // rather than claiming to be one of them.
+      ctx.strokeStyle = rgba(mutual ? this.theme.ink : color, 0.95);
       ctx.lineWidth = Math.max(2.2, MIN_EDGE_PX / k);
       if (e.confidence === "inferred") ctx.setLineDash([5 / k, 4 / k]);
       ctx.stroke(path);
       ctx.setLineDash([]);
-      ctx.fillStyle = color;
-      this.arrowHead(pos, e, 1.25);
+      ctx.fillStyle = mutual ? this.theme.ink : color;
+      this.arrowHead(pos, e, 1.25, mutual);
     }
+
     // No zoom gate here, unlike the general labels: a focus ring has a handful of
     // edges and naming them is the entire point of having focused.
     ctx.font = LABEL_FONT;
     ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.lineWidth = 3 / k;
-    ctx.strokeStyle = this.theme.canvas;
-    for (const { e, role } of focused) {
+    ctx.textBaseline = "middle";
+    for (const { e, role, mutual } of draw) {
       const [sx, sy, tx, ty, ux, uy] = this.edgeEnds(pos, e);
-      const lx = (sx + tx) / 2 - uy * 14;
-      const ly = (sy + ty) / 2 + ux * 14;
-      const text = e.relation.replace(/_/g, " ");
-      ctx.strokeText(text, lx, ly);
-      ctx.fillStyle = role === "out" ? this.theme.out : this.theme.in;
+      const [mx, my] = this.bowPoint(sx, sy, tx, ty, ux, uy, e.bow);
+      // The midpoint of the CURVE, not of the chord: at B(0.5) the label sits on
+      // the rope it names instead of floating beside it.
+      const lx = (sx + 2 * mx + tx) / 4;
+      const ly = (sy + 2 * my + ty) / 4;
+      const verb = mutual ? `${verbFor(e.relation, "out")} both ways` : verbFor(e.relation, role);
+      const text = e.weight && e.weight > 1 ? `${verb} ×${e.weight}` : verb;
+      this.labelPlate(text, lx, ly, k);
+      ctx.fillStyle = mutual ? this.theme.ink : role === "out" ? this.theme.out : this.theme.in;
       ctx.fillText(text, lx, ly);
     }
+  }
+
+  /**
+   * The canvas-coloured plate a label sits on.
+   *
+   * A stroked halo is the cheap way to keep text off a line, and it fails exactly
+   * where it matters: over a thick bundle, or where two edges cross, the halo is
+   * thinner than what it has to hide and the text turns to mush. A filled plate —
+   * the way Excalidraw labels an arrow — is opaque by construction, so the words
+   * read at any zoom over anything.
+   */
+  private labelPlate(text: string, x: number, y: number, k: number): void {
+    const ctx = this.ctx;
+    const w = ctx.measureText(text).width;
+    const padX = 5 / k, padY = 3.5 / k;
+    const h = LABEL_SIZE / k;
+    const r = Math.min(4 / k, h / 2 + padY);
+    const left = x - w / 2 - padX, top = y - h / 2 - padY;
+    const width = w + padX * 2, height = h + padY * 2;
+    ctx.beginPath();
+    ctx.moveTo(left + r, top);
+    ctx.arcTo(left + width, top, left + width, top + height, r);
+    ctx.arcTo(left + width, top + height, left, top + height, r);
+    ctx.arcTo(left, top + height, left, top, r);
+    ctx.arcTo(left, top, left + width, top, r);
+    ctx.closePath();
+    ctx.fillStyle = rgba(this.theme.canvas, 0.92);
+    ctx.fill();
+  }
+
+  /**
+   * How much room node `i` actually takes on screen, in world units.
+   *
+   * `n.r` is the radius a CIRCLE of this weight would have; every other shape is
+   * grown from it to cover the same area, reaching 1.55x further out for a
+   * triangle. Spacing computed from `n.r` therefore under-reserves for exactly
+   * the shapes that need the most, which is why arranged neighbours still landed
+   * on top of each other. Everything that reasons about room — the ring, the
+   * eviction band, the frame — reads this instead.
+   */
+  private roomOf(i: number): number {
+    return sizedFor(this.nodes[i].shape, this.nodes[i].r);
+  }
+
+  /**
+   * Move node `i` to `(x, y)` under the reader's finger, and keep the graph from
+   * stacking up underneath it.
+   *
+   * A force layout does this itself — collision is one of its forces. An exact
+   * layout has no simulation running, so before this a bubble could be dropped
+   * squarely on top of another and simply stay there. Restarting the simulation
+   * for the occasion is not the fix either: measured on a real graph it moved all
+   * 61 nodes and threw one 1,900 units, i.e. it answered "let me put this here"
+   * with a different picture.
+   *
+   * So the collision is resolved locally instead: whatever the dragged node lands
+   * on is pushed just far enough to clear it, and if that node in turn lands on
+   * something, so is that — a couple of levels deep, which is all it takes on a
+   * layout that had no overlaps to begin with. Everything else stays exactly
+   * where the reader last saw it.
+   */
+  private dragMoved(i: number, x: number, y: number): void {
+    this.layout.fix(i, x, y);
+    if (!this.layout.isStatic) { this.layout.reheat(0.25); return; }
+    this.separate(i);
+    this.stamp++;
+    this.dirty = true;
+  }
+
+  /**
+   * Push everything overlapping `i` clear of it, and whatever those then overlap.
+   *
+   * A queue rather than fixed-depth recursion: two levels left the odd pair of
+   * bystanders sitting on each other after a long drag through a crowd. Each node
+   * may be pushed a few times and no more, which is what stops A and B trading
+   * places forever, and the whole cascade is capped so a drag can never cost more
+   * than a frame.
+   */
+  private separate(from: number): void {
+    const pos = this.layout.positions;
+    const pushes = new Map<number, number>();
+    const queue = [from];
+    let budget = SEPARATION_BUDGET;
+
+    while (queue.length > 0 && budget > 0) {
+      const i = queue.shift()!;
+      const ri = this.roomOf(i);
+      for (let j = 0; j < this.nodes.length; j++) {
+        // A pinned node is moved too. Pinning says "leave this where I put it",
+        // which the layout honours; it cannot mean "let other nodes be dropped on
+        // top of it", because then dragging one bubble onto a pinned one left them
+        // overlapping with nothing able to fix it.
+        if (j === i || j === from || this.hiddenTypes[this.nodes[j].type]) continue;
+        if ((pushes.get(j) ?? 0) >= MAX_PUSHES) continue;
+        let dx = pos[j * 2] - pos[i * 2];
+        let dy = pos[j * 2 + 1] - pos[i * 2 + 1];
+        let d = Math.hypot(dx, dy);
+        const want = ri + this.roomOf(j) + SEPARATION_GAP;
+        if (d >= want) continue;
+        // Exactly on top: no bearing to push along, so take a deterministic one
+        // rather than leaving the two welded together.
+        if (d < 1e-3) { const a = (j * 2.39996) % (Math.PI * 2); dx = Math.cos(a); dy = Math.sin(a); d = 1; }
+        pos[j * 2] = pos[i * 2] + (dx / d) * want;
+        pos[j * 2 + 1] = pos[i * 2 + 1] + (dy / d) * want;
+        this.layout.fix(j, pos[j * 2], pos[j * 2 + 1]);
+        pushes.set(j, (pushes.get(j) ?? 0) + 1);
+        queue.push(j);
+        budget--;
+        if (budget <= 0) break;
+      }
+    }
+  }
+
+  /** The selected node's index, or -1 — the same lookup the paint path does, kept
+   * in one place so the trim and the ring agree about who is wearing one. */
+  private selectedIndex(): number {
+    return this.selected === null ? -1 : this.index.get(this.selected) ?? -1;
+  }
+
+  /**
+   * How far an edge must stay clear of node `i`'s centre, along `angle`.
+   *
+   * The node's own outline, plus a fixed gap, plus the ring it is wearing if any:
+   * an arrow that ends under the selection ring reads as ending inside the node,
+   * which is the one thing the trim exists to prevent. Both ends use this, so an
+   * edge sits the same distance off its source as off its target — the old
+   * asymmetric `+2` / `+6` is what made the tail overlap while the head floated.
+   */
+  private clearanceOf(i: number, angle: number): number {
+    const n = this.nodes[i];
+    const ringed = i === this.selectedIndex() || i === this.hover || this.pinned.has(i);
+    return radiusAt(n.shape, n.r, angle) + EDGE_GAP + (ringed ? RING_PAD : 0);
   }
 
   /** Trimmed endpoints and the unit vector between them — the geometry every edge
@@ -1506,37 +1854,89 @@ export class GraphView {
     const dx = bx - ax, dy = by - ay;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / d, uy = dy / d;
-    const ar = this.nodes[e.s].r, br = this.nodes[e.t].r;
-    return [ax + ux * (ar + 2), ay + uy * (ar + 2), bx - ux * (br + 6), by - uy * (br + 6), ux, uy];
+    const outward = Math.atan2(uy, ux);
+    const ar = this.clearanceOf(e.s, outward);
+    const br = this.clearanceOf(e.t, outward + Math.PI);
+    return [ax + ux * ar, ay + uy * ar, bx - ux * br, by - uy * br, ux, uy];
+  }
+
+  /**
+   * Give every edge between the same pair of nodes its own bow.
+   *
+   * Two modules joined by both a call bundle and an include bundle drew two
+   * curves with the same constant bow — one exactly on top of the other, two
+   * arrowheads in the same place and two labels in the same place, of which the
+   * reader saw whichever was painted last. Fanning them apart is what makes the
+   * second fact visible at all.
+   *
+   * Direction is part of the key on purpose: `a → b` and `b → a` bow to opposite
+   * sides, so a mutual dependency reads as a lens rather than as one line.
+   */
+  private fanOut(): void {
+    const lanes = new Map<string, SimEdge[]>();
+    for (const e of this.edges) {
+      const key = e.s < e.t ? `${e.s}|${e.t}` : `${e.t}|${e.s}`;
+      const lane = lanes.get(key);
+      if (lane) lane.push(e);
+      else lanes.set(key, [e]);
+    }
+    for (const lane of lanes.values()) {
+      if (lane.length === 1) { lane[0].bow = BOW; continue; }
+      // Centred on the straight line, so a pair with two edges straddles it and a
+      // pair with three keeps one down the middle.
+      lane.forEach((e, i) => {
+        const offset = (i - (lane.length - 1) / 2) * BOW_STEP;
+        e.bow = (e.s === lane[0].s ? 1 : -1) * BOW + offset;
+      });
+    }
+  }
+
+  /** The control point of an edge's curve: the bow, applied perpendicular. */
+  private bowPoint(sx: number, sy: number, tx: number, ty: number, ux: number, uy: number, bow: number):
+  [number, number] {
+    return [(sx + tx) / 2 - uy * bow, (sy + ty) / 2 + ux * bow];
   }
 
   private edgePath(path: Path2D, pos: Float32Array, e: SimEdge): void {
     const [sx, sy, tx, ty, ux, uy] = this.edgeEnds(pos, e);
-    // The same gentle bow the SVG had: two edges between the same pair stay
-    // distinguishable, and a self-loop is not a zero-length line.
-    const mx = (sx + tx) / 2 - uy * 10;
-    const my = (sy + ty) / 2 + ux * 10;
+    const [mx, my] = this.bowPoint(sx, sy, tx, ty, ux, uy, e.bow);
     path.moveTo(sx, sy);
     path.quadraticCurveTo(mx, my, tx, ty);
   }
 
-  private arrowHead(pos: Float32Array, e: SimEdge, scale: number): void {
+  /** One arrowhead at `(hx, hy)`, pointing along `(dx, dy)`. */
+  private headAt(hx: number, hy: number, dx: number, dy: number, scale: number): void {
     const ctx = this.ctx;
-    const [sx, sy, tx, ty, ux, uy] = this.edgeEnds(pos, e);
-    // Tangent at the curve's end, not the chord: the bow means they differ enough
-    // for a chord-aligned head to sit visibly askew.
-    const mx = (sx + tx) / 2 - uy * 10;
-    const my = (sy + ty) / 2 + ux * 10;
-    let dx = tx - mx, dy = ty - my;
-    const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    dx /= d; dy /= d;
     const size = 6 * scale;
     ctx.beginPath();
-    ctx.moveTo(tx, ty);
-    ctx.lineTo(tx - dx * size + dy * size * 0.5, ty - dy * size - dx * size * 0.5);
-    ctx.lineTo(tx - dx * size - dy * size * 0.5, ty - dy * size + dx * size * 0.5);
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(hx - dx * size + dy * size * 0.5, hy - dy * size - dx * size * 0.5);
+    ctx.lineTo(hx - dx * size - dy * size * 0.5, hy - dy * size + dx * size * 0.5);
     ctx.closePath();
     ctx.fill();
+  }
+
+  /**
+   * Arrowheads for one edge: at the target always, and at the source too when
+   * `bothEnds` — a mutual dependency drawn as one double-headed rope rather than
+   * as two ropes the reader has to notice are a pair. Purely how it is drawn:
+   * the two edges are still two edges, and the panel still names each.
+   */
+  private arrowHead(pos: Float32Array, e: SimEdge, scale: number, bothEnds = false): void {
+    const [sx, sy, tx, ty, ux, uy] = this.edgeEnds(pos, e);
+    const [mx, my] = this.bowPoint(sx, sy, tx, ty, ux, uy, e.bow);
+    // Tangent at the curve's end, not the chord: the bow means they differ enough
+    // for a chord-aligned head to sit visibly askew.
+    const norm = (dx: number, dy: number): [number, number] => {
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      return [dx / d, dy / d];
+    };
+    const [hx, hy] = norm(tx - mx, ty - my);
+    this.headAt(tx, ty, hx, hy, scale);
+    if (bothEnds) {
+      const [bx, by] = norm(sx - mx, sy - my);
+      this.headAt(sx, sy, bx, by, scale);
+    }
   }
 
   /**
