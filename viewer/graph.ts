@@ -26,7 +26,7 @@
  * and fades the rest of the graph.
  */
 import { type VizGraph, type VizEdge, type NodeOwner, famOf, REST, chipKey, colorToken, cvar } from "./data.js";
-import { groupPalette, shapeOf, shapePath, type Shape } from "./palette.js";
+import { groupPalette, shapeOf, shapePath, sizedFor, textWidthIn, type Shape } from "./palette.js";
 import { significantDirs } from "./aggregate.js";
 import { initials } from "./detail.js";
 import { LayoutDriver } from "./sim.js";
@@ -864,7 +864,7 @@ export class GraphView {
           const ex = pos[i * 2] - wx;
           const ey = pos[i * 2 + 1] - wy;
           const d = ex * ex + ey * ey;
-          const reach = this.nodes[i].r + slack;
+          const reach = sizedFor(this.nodes[i].shape, this.nodes[i].r) + slack;
           if (d <= reach * reach && d < bestD) { bestD = d; best = i; }
         }
       }
@@ -1202,7 +1202,7 @@ export class GraphView {
       if (!path) { path = new Path2D(); buckets.set(n.group, path); }
       // A square, not a circle: at this size the difference is invisible and `rect`
       // costs none of the trigonometry `arc` does.
-      const r = Math.max(n.r, minR);
+      const r = sizedFor(n.shape, Math.max(n.r, minR));
       path.rect(pos[i * 2] - r, pos[i * 2 + 1] - r, r * 2, r * 2);
     }
     for (const [group, path] of buckets) {
@@ -1417,8 +1417,9 @@ export class GraphView {
       if (this.spotlight && !this.spotlight.has(this.nodes[i].id)) continue;
       const n = this.nodes[i];
       const x = pos[i * 2], y = pos[i * 2 + 1];
-      const r = Math.max(n.r, MIN_NODE_PX / k) * 1.9;
-      const g = ctx.createRadialGradient(x, y, n.r * 0.8, x, y, r);
+      const drawn = sizedFor(n.shape, Math.max(n.r, MIN_NODE_PX / k));
+      const r = drawn * 1.9;
+      const g = ctx.createRadialGradient(x, y, drawn * 0.8, x, y, r);
       const color = this.colorOf(n);
       g.addColorStop(0, rgba(color, 0.16));
       g.addColorStop(1, rgba(color, 0));
@@ -1433,13 +1434,17 @@ export class GraphView {
    * hover changes far more often than the geometry does. */
   private paintRings(pos: Float32Array, sel: number, k: number): void {
     const ctx = this.ctx;
+    // The outline follows the node's own shape. A circle drawn around a triangle
+    // says the selection is somewhere in that area rather than on that node, and
+    // on a crowded canvas that is the difference between an answer and a hint.
     const ring = (i: number, color: string, alpha: number, pad: number, width: number): void => {
       if (i < 0 || this.hiddenTypes[this.nodes[i].type]) return;
+      const n = this.nodes[i];
+      const path = new Path2D();
+      shapePath(path, n.shape, pos[i * 2], pos[i * 2 + 1], n.r + pad);
       ctx.strokeStyle = rgba(color, alpha);
       ctx.lineWidth = Math.max(width, width / k);
-      ctx.beginPath();
-      ctx.arc(pos[i * 2], pos[i * 2 + 1], this.nodes[i].r + pad, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.stroke(path);
     };
     for (const i of this.pinned) ring(i, this.theme.out, 0.7, 3, 1.4);
     if (sel >= 0) ring(sel, this.colorOf(this.nodes[sel]), 0.55, 5, 1.6);
@@ -1581,13 +1586,17 @@ export class GraphView {
       // A name inside the thing it names, when the thing is big enough to hold it.
       // A bubble worth 1,200 symbols is a place on the map, and a place wears its
       // label on its face; only a dot too small to write on needs one hung beneath.
-      const inside = n.r * this.view.k >= INSIDE_LABEL_PX;
+      // Fit to what THIS shape can hold, not to a circle: a diamond is full width
+      // at exactly one height and pinches to nothing above and below, so a name
+      // sized to its widest chord spills straight out of the corners.
+      ctx.font = LABEL_FONT;
+      const room = textWidthIn(n.shape, n.r);
+      const size = Math.min(INSIDE_LABEL_MAX, LABEL_SIZE * (room / Math.max(1, ctx.measureText(n.name).width)));
+      // Inside only when the shape is big enough on screen AND the name fits at a
+      // readable size. Below that the label goes underneath, where it has the whole
+      // canvas to be legible in, rather than overflowing an outline it cannot fit.
+      const inside = n.r * this.view.k >= INSIDE_LABEL_PX && size >= INSIDE_LABEL_MIN;
       if (inside) {
-        // Shrink to fit the widest chord the shape allows, floored so a long name
-        // never becomes unreadable — it is clipped by its own bubble instead.
-        ctx.font = LABEL_FONT;
-        const fit = (n.r * 1.55) / Math.max(1, ctx.measureText(n.name).width);
-        const size = Math.max(INSIDE_LABEL_MIN, Math.min(INSIDE_LABEL_MAX, LABEL_SIZE * fit));
         ctx.font = LABEL_FONT.replace(`${LABEL_SIZE}px`, `${size.toFixed(1)}px`);
         ctx.textBaseline = "middle";
         // Contrast against THIS bubble, not against the page. Sixty-six hues span
@@ -1597,7 +1606,7 @@ export class GraphView {
       } else {
         ctx.font = LABEL_FONT;
         ctx.textBaseline = "alphabetic";
-        const y = pos[i * 2 + 1] + n.r + 15;
+        const y = pos[i * 2 + 1] + sizedFor(n.shape, n.r) + 15;
         ctx.strokeText(n.name, x, y);
         ctx.fillStyle = this.theme.ink;
         ctx.fillText(n.name, x, y);

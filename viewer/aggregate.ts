@@ -79,6 +79,20 @@ export function groupKeyOf(path: string, depth: number): string {
   return significantDirs(path).slice(0, depth).join("/");
 }
 
+/**
+ * The depth at which grouping switches from directories to individual files.
+ *
+ * A property of the GRAPH, not of any one path: a top-level `main.cpp` has no
+ * directories of its own, but it must not become a file bubble while everything
+ * beside it is still grouped by module. One past the deepest directory anywhere
+ * in the graph is the rung where every path has run out of directories together.
+ */
+export function fileRungOf(graph: VizGraph): number {
+  let deepest = 0;
+  for (const n of graph.nodes) deepest = Math.max(deepest, significantDirs(pathOf(n)).length);
+  return deepest + 1;
+}
+
 /** The group key for files that belong to no module — the repo's own code. */
 export const ROOT_GROUP = "";
 
@@ -90,7 +104,8 @@ export function availableDepths(graph: VizGraph): number[] {
     const dirs = significantDirs(pathOf(n)).length;
     if (dirs > max) max = dirs;
   }
-  return Array.from({ length: Math.min(max, 4) }, (_, i) => i + 1);
+  // One past the deepest directory: that level groups by file.
+  return Array.from({ length: Math.min(max + 1, 5) }, (_, i) => i + 1);
 }
 
 /**
@@ -164,10 +179,13 @@ export function groupGraph(graph: VizGraph, opts: GroupOptions): VizGraph {
     return { ...graph, nodes, edges, meta: { ...graph.meta, nodeCount: nodes.length, edgeCount: edges.length } };
   }
 
+  // Past the last directory level, group by file — the rung between "modules" and
+  // "four hundred individual functions" that drilling otherwise has to jump.
+  const byFile = opts.depth >= fileRungOf(graph);
   const groupOf = new Map<string, string>();
   const groups = new Map<string, { key: string; members: number; internal: number }>();
   for (const n of nodes) {
-    const key = groupKeyOf(pathOf(n), opts.depth);
+    const key = byFile ? pathOf(n) : groupKeyOf(pathOf(n), opts.depth);
     groupOf.set(n.id, key);
     const g = groups.get(key);
     if (g) g.members++;

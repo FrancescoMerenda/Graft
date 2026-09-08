@@ -61,8 +61,24 @@ test("pathOf prefers the explicit path and falls back to the sources string", ()
   );
 });
 
-test("availableDepths offers only the levels the tree actually has", () => {
-  assert.deepEqual(availableDepths(GRAPH), [1, 2]);
+test("availableDepths offers the levels the tree has, plus the file rung", () => {
+  // Two directory levels, then one more where grouping is by file.
+  assert.deepEqual(availableDepths(GRAPH), [1, 2, 3]);
+});
+
+test("the file rung is a property of the graph, not of one path", async () => {
+  const { fileRungOf } = await import("../viewer/aggregate.js");
+  // The deepest path has two significant directories (`sources` is a convention),
+  // so depth 3 is where every path has run out of directories together —
+  // including the top-level file that never had any.
+  assert.equal(
+    fileRungOf({
+      meta: { nodeCount: 0, edgeCount: 0 },
+      nodes: [node("libs/mcl/sources/a.cpp#x", "libs/mcl/sources/a.cpp"), node("main.cpp#m", "main.cpp")],
+      edges: [],
+    }),
+    3,
+  );
 });
 
 test("groupGraph rolls symbols into directory bubbles and bundles the edges", () => {
@@ -98,11 +114,14 @@ test("hideOrphans drops symbols nothing links to, and their group with them", ()
   assert.equal(ids.length, GRAPH.nodes.length - 1);
 });
 
-test("scope drills into one subtree", () => {
+test("scope drills into one subtree, and at the file rung shows its files", () => {
   const g = groupGraph(GRAPH, { depth: 3, scope: "libs/mcl" });
-  assert.deepEqual(g.nodes.map((n) => n.id).sort(), ["group:libs/mcl"]);
-  // Edges leaving the scope are not drawn, because their other end is not here.
-  assert.equal(g.edges.length, 0);
+  // Depth 3 is past the deepest directory, so `libs/mcl` opens into its files
+  // rather than collapsing to a single bubble containing everything.
+  assert.deepEqual(g.nodes.map((n) => n.id).sort(), ["group:libs/mcl/a.cpp", "group:libs/mcl/b.cpp"]);
+  // Edges leaving the scope are not drawn, because their other end is not here;
+  // the one inside it is.
+  assert.equal(g.edges.length, 1);
 });
 
 /* ----------------------------------------------------------------- analysis -- */

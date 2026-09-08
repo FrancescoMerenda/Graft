@@ -7,7 +7,7 @@ import { shapeOf, shapeSvg } from "./palette.js";
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
-import { groupGraph, availableDepths, pathOf, significantDirs } from "./aggregate.js";
+import { groupGraph, availableDepths, pathOf, significantDirs, fileRungOf } from "./aggregate.js";
 import { staticLayout, type LayoutMode } from "./layouts.js";
 import { buildAdjacency, shortestPath, neighborhood, findCycles, hubs, type Adjacency } from "./analysis.js";
 
@@ -454,7 +454,9 @@ function renderGroupOptions(raw: VizGraph): void {
     for (const d of options) {
       const o = document.createElement("option");
       o.value = d;
-      o.textContent = d === "0" ? "symbols" : d === "1" ? "top level" : `${d} levels`;
+      o.textContent = d === "0" ? "symbols"
+        : Number(d) >= fileRungOf(raw) ? "files"
+          : d === "1" ? "top level" : `${d} levels`;
       sel.appendChild(o);
     }
     sel.dataset.built = options.join(",");
@@ -518,13 +520,28 @@ function depthFor(scope: string | undefined): number {
   const raw = rawGraph();
   if (!raw) return 0;
   if (!scope) return raw.nodes.length > AUTO_GROUP_NODES ? Math.min(2, availableDepths(raw).length) : 0;
-  const base = scope.split("/").length;
-  const deeper = raw.nodes.some((n) => {
+  const inside = raw.nodes.filter((n) => {
     const p = pathOf(n);
-    if (p !== scope && !p.startsWith(`${scope}/`)) return false;
-    return significantDirs(p).length > base;
+    return p === scope || p.startsWith(`${scope}/`);
   });
-  return deeper ? base + 1 : 0;
+  if (inside.length === 0) return 0;
+
+  let deepest = 0;
+  const files = new Set<string>();
+  for (const n of inside) {
+    const p = pathOf(n);
+    deepest = Math.max(deepest, significantDirs(p).length);
+    files.add(p);
+  }
+
+  const base = scope.split("/").length;
+  // One rung at a time: another directory level if there is one, then the files,
+  // then the symbols themselves. Each double-click descends exactly one step, all
+  // the way down, instead of jumping from a module straight to four hundred
+  // functions with nothing in between.
+  if (base < deepest) return base + 1;
+  if (files.size > 1 && !files.has(scope)) return fileRungOf(raw);
+  return 0;
 }
 
 /** Move to a scope and pick the depth that shows its contents. */
