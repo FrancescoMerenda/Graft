@@ -28,9 +28,10 @@ hotspots), no LLM, no key.
 - \`graft skeleton <file>\` → every definition's signature + span, ~10× cheaper
   than reading the file; use it to skim an API surface.
 - \`graft callers <symbol>\` gives precomputed, exact edges — who calls this.
-  Add \`--direction out\` for what it calls, or \`--depth N\` to walk
-  transitively for the full blast radius. For structural questions, skip
-  ranking and use this directly.
+  Add \`--direction out\` for what it calls, \`--depth N\` to walk
+  transitively for the full blast radius, or \`--relation extends\` to ask one
+  structural question at a time (what subclasses this, what imports this).
+  For structural questions, skip ranking and use this directly.
 - Or browse: \`graft/INDEX.md\` lists every node; follow the links.
 - Monorepos and folders of multiple repos rank fairly across sub-projects —
   hits carry \`[scope/]\` labels naming which one they're from. Narrow with

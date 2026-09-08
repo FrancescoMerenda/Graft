@@ -121,23 +121,32 @@ export interface EdgeHit {
   depth: number;
 }
 
+/**
+ * The relations a walk may follow: every dependency edge unless the caller
+ * narrowed it. Threaded through every function here rather than applied to the
+ * results, because at depth > 1 a filter is part of the traversal — "what does
+ * `extends` reach transitively" must not route through a `calls` edge in the
+ * middle and report the far side as a subclass.
+ */
+export type RelationFilter = ReadonlySet<Relation>;
+
 /** Depth-1: nodes with a walk-relation edge whose target is `symbol`. */
-export function callersOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
+export function callersOf(graph: GraphV1, symbol: NodeV1, relations: RelationFilter = WALK_RELATIONS): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
-    if (!WALK_RELATIONS.has(e.relation) || e.target !== symbol.id) continue;
+    if (!relations.has(e.relation) || e.target !== symbol.id) continue;
     hits.push({ node: byId.get(e.source) ?? null, id: e.source, relation: e.relation, depth: 1 });
   }
   return hits;
 }
 
 /** Depth-1: walk-relation edges whose source is `symbol`. */
-export function calleesOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
+export function calleesOf(graph: GraphV1, symbol: NodeV1, relations: RelationFilter = WALK_RELATIONS): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
-    if (!WALK_RELATIONS.has(e.relation) || e.source !== symbol.id) continue;
+    if (!relations.has(e.relation) || e.source !== symbol.id) continue;
     hits.push({ node: byId.get(e.target) ?? null, id: e.target, relation: e.relation, depth: 1 });
   }
   return hits;
@@ -149,8 +158,8 @@ export function calleesOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
  * reported once, at the depth it was first reached (a diamond-shaped
  * dependency graph counts its convergence node exactly once).
  */
-export function impactOf(graph: GraphV1, symbol: NodeV1, maxDepth = 2): EdgeHit[] {
-  return impactOfMany(graph, [symbol], maxDepth);
+export function impactOf(graph: GraphV1, symbol: NodeV1, maxDepth = 2, relations: RelationFilter = WALK_RELATIONS): EdgeHit[] {
+  return impactOfMany(graph, [symbol], maxDepth, "in", relations);
 }
 
 /**
@@ -169,7 +178,13 @@ export function impactOf(graph: GraphV1, symbol: NodeV1, maxDepth = 2): EdgeHit[
  * proceeds exactly like `impactOf`'s: each reached node deduped by id and
  * reported once, at the depth it was first reached from *any* seed.
  */
-export function impactOfMany(graph: GraphV1, seeds: NodeV1[], maxDepth = 2, direction: Direction = "in"): EdgeHit[] {
+export function impactOfMany(
+  graph: GraphV1,
+  seeds: NodeV1[],
+  maxDepth = 2,
+  direction: Direction = "in",
+  relations: RelationFilter = WALK_RELATIONS,
+): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
 
   // Adjacency keyed for the walk direction, restricted to walk relations:
@@ -177,7 +192,7 @@ export function impactOfMany(graph: GraphV1, seeds: NodeV1[], maxDepth = 2, dire
   //   'out' → key = edge.source, neighbour = edge.target (what key points TO)
   const adj = new Map<string, { other: string; relation: Relation }[]>();
   for (const e of graph.edges as EdgeV1[]) {
-    if (!WALK_RELATIONS.has(e.relation)) continue;
+    if (!relations.has(e.relation)) continue;
     const key = direction === "in" ? e.target : e.source;
     const other = direction === "in" ? e.source : e.target;
     const entry = { other, relation: e.relation };
@@ -221,8 +236,14 @@ function symbolsInFile(graph: GraphV1, fileNode: NodeV1): NodeV1[] {
  * see this module's header and `impactOfMany`'s doc for why. Symbol-kind
  * queries keep using plain `impactOf`; this is only for file-kind matches.
  */
-export function impactOfFile(graph: GraphV1, fileNode: NodeV1, maxDepth = 2, direction: Direction = "in"): EdgeHit[] {
-  return impactOfMany(graph, [fileNode, ...symbolsInFile(graph, fileNode)], maxDepth, direction);
+export function impactOfFile(
+  graph: GraphV1,
+  fileNode: NodeV1,
+  maxDepth = 2,
+  direction: Direction = "in",
+  relations: RelationFilter = WALK_RELATIONS,
+): EdgeHit[] {
+  return impactOfMany(graph, [fileNode, ...symbolsInFile(graph, fileNode)], maxDepth, direction, relations);
 }
 
 /**
@@ -238,8 +259,16 @@ export function impactOfFile(graph: GraphV1, fileNode: NodeV1, maxDepth = 2, dir
  * for a `kind: 'file'` seed aggregates over the symbols the file defines (see
  * {@link impactOfMany}) so file-level dependents aren't silently dropped.
  */
-export function edgeWalk(graph: GraphV1, node: NodeV1, direction: Direction, depth: number): EdgeHit[] {
-  if (depth <= 1) return direction === "in" ? callersOf(graph, node) : calleesOf(graph, node);
-  if (node.kind === "file") return impactOfFile(graph, node, depth, direction);
-  return impactOfMany(graph, [node], depth, direction);
+export function edgeWalk(
+  graph: GraphV1,
+  node: NodeV1,
+  direction: Direction,
+  depth: number,
+  relations: RelationFilter = WALK_RELATIONS,
+): EdgeHit[] {
+  if (depth <= 1) {
+    return direction === "in" ? callersOf(graph, node, relations) : calleesOf(graph, node, relations);
+  }
+  if (node.kind === "file") return impactOfFile(graph, node, depth, direction, relations);
+  return impactOfMany(graph, [node], depth, direction, relations);
 }

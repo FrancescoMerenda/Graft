@@ -301,9 +301,9 @@ Both configs are user-level, so they apply to **every** repo you open with Codex
 |---|---|---|
 | `graft_find_code` | a question | Ranked nodes with file:line, source inlined — usually the full answer, no follow-up read needed. |
 | `graft_file_api` | a file path | Every signature in that file, no bodies — the API surface for a tenth of the tokens. |
-| `graft_trace_calls` | a symbol | Who depends on it, or what it depends on with `direction: out`, N levels deep for blast radius. |
+| `graft_trace_calls` | a symbol | Who depends on it, or what it depends on with `direction: out`, N levels deep for blast radius; `relation: "extends"` narrows it to one edge kind. |
 | `graft_find_all` | a regex | Every hit, grouped by enclosing symbol, ranked by how coupled that symbol is. |
-| `graft_repo_map` | nothing | A first look at an unfamiliar repo: directory clusters, hubs, hotspots. |
+| `graft_repo_map` | nothing | A first look at an unfamiliar repo: directory clusters, which directory depends on which, hubs, hotspots. |
 | `graft_check_freshness` | nothing | Whether the local graph has drifted from the code. |
 
 Register it by hand if your agent needs it explicit:
@@ -357,12 +357,13 @@ graft skeleton <file> [dir]          # every signature in one file, no bodies �
 graft callers <symbol> [dir]         # who calls/references/imports/implements/extends a symbol (no LLM, no key)
 graft callers <symbol> --direction out  # the reverse: what the symbol itself calls/references (was `graft callees`)
 graft callers <symbol> -d N          # walk transitively out to depth N — full blast radius (was `graft impact`)
+graft callers <symbol> --relation extends  # one edge kind only: calls, references, imports, implements, extends
 
 graft grep "<regex>" [dir]           # exhaustive regex search over indexed files, grouped by enclosing symbol (no LLM, no key)
 graft grep "<regex>" --in <path>     # narrow to files at or under this path prefix
 graft grep "<regex>" -i --fixed      # case-insensitive; treat the pattern as a literal string, not a regex
 
-graft map [dir]                      # token-budgeted repo orientation — dir clusters, hubs, hotspots (no LLM, no key)
+graft map [dir]                      # token-budgeted repo orientation — dir clusters, inter-dir dependencies, hubs, hotspots (no LLM, no key)
 graft map --max-dirs N               # raise/lower the number of directories shown
 
 graft blast [dir]                    # blast radius of a diff: what depends on the lines this change touched (no LLM, no key)
@@ -434,8 +435,9 @@ rarelyCalled · function · src/a.ts:L4-L6 · 0 in-edges
 ```
 
 `graft map` is a token-budgeted first look at a repo — directory clusters
-with file/symbol counts, each dir's local hubs, and the global hotspots —
-all ranked by in-degree, no LLM, no key:
+with file/symbol counts, which directory depends on which, each dir's local
+hubs, and the global hotspots — all straight from the wiring graph, no LLM,
+no key:
 
 ```
 repo map — 113 files · 687 symbols · 2186 edges · typescript
@@ -445,8 +447,17 @@ test/               43 files · 102 symbols   hubs: edge (graph-traverse.test.ts
 viewer/             5 files · 58 symbols   hubs: $ (main.ts, 9←), activeGraph (main.ts, 5←), cvar (data.ts, 5←)
 scripts/            2 files · 0 symbols
 
+depends on
+test/ → src/       976 edges (581 calls, 362 imports, 21 references, 12 implements)
+test/ → viewer/     19 edges (16 calls, 3 imports)
+
 hotspots: contextDirFor · function · src/context/node-file.ts:L100-L103 · 21←  wiringPath · function · src/graph/write.ts:L20-L22 · 14←  buildGraph · function · src/graph/build.ts:L104-L218 · 11←  ...
 ```
+
+The `depends on` section is the one thing a file tree can never show: which
+parts of the repo lean on which, ranked by weight and broken down by edge kind
+(`extends` and `calls` mean very different things about a dependency).
+`--max-deps N` widens it.
 
 ## Monorepos, submodules & multi-repo folders
 

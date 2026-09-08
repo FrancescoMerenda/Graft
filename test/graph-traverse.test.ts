@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { resolveSymbol, callersOf, calleesOf, impactOf, impactOfMany, impactOfFile } from "../src/graph/traverse.js";
+import { parseWalkRelations } from "../src/graph/relations.js";
 import type { EdgeV1, GraphV1, NodeV1, Relation } from "../src/graph/types.js";
 
 function nodeStub(partial: Partial<NodeV1> & { id: string }): NodeV1 {
@@ -335,4 +336,78 @@ test("impactOfFile: aggregates over the file node and every symbol node it defin
 test("impactOfFile: with no symbol nodes in the file, behaves exactly like impactOf on the file node", () => {
   const g = baseGraph();
   assert.deepEqual(impactOfFile(g, fileNode, 2), impactOf(g, fileNode, 2));
+});
+
+// ── relation filter ──────────────────────────────────────────────────────
+
+/** A base class, a subclass that also calls it, and an unrelated caller —
+ * enough to tell "who inherits from this" apart from "who uses this". */
+const base = nodeStub({ id: "src/base.ts#Base", name: "Base", kind: "class", path: "src/base.ts" });
+const derived = nodeStub({ id: "src/derived.ts#Derived", name: "Derived", kind: "class", path: "src/derived.ts" });
+const grandchild = nodeStub({ id: "src/gc.ts#Grand", name: "Grand", kind: "class", path: "src/gc.ts" });
+const user = nodeStub({ id: "src/user.ts#use", name: "use", kind: "function", path: "src/user.ts" });
+
+function inheritGraph(): GraphV1 {
+  return graphOf(
+    [base, derived, grandchild, user],
+    [
+      edge(derived.id, base.id, "extends"),
+      edge(grandchild.id, derived.id, "extends"),
+      edge(user.id, base.id, "calls"),
+      // The bridge that must NOT be walked when the filter is `extends`: it
+      // would otherwise let a caller of a caller pose as a subclass.
+      edge(user.id, grandchild.id, "calls"),
+    ],
+  );
+}
+
+test("callersOf: a relation filter keeps only edges of that kind", () => {
+  const g = inheritGraph();
+  const all = callersOf(g, base).map((h) => h.id).sort();
+  assert.deepEqual(all, [derived.id, user.id].sort());
+
+  const inherits = callersOf(g, base, new Set<Relation>(["extends"])).map((h) => h.id);
+  assert.deepEqual(inherits, [derived.id]);
+});
+
+test("calleesOf: a relation filter narrows the outgoing walk the same way", () => {
+  const g = inheritGraph();
+  assert.deepEqual(calleesOf(g, user, new Set<Relation>(["extends"])), []);
+  assert.deepEqual(
+    calleesOf(g, user).map((h) => h.id).sort(),
+    [base.id, grandchild.id].sort(),
+  );
+});
+
+test("a filtered BFS never routes THROUGH an excluded relation", () => {
+  const g = inheritGraph();
+  // Unfiltered, `use` reaches Base at depth 2 via Grand→Derived→Base… and
+  // directly. Filtered to `extends`, the whole subclass chain is reachable and
+  // the caller is not: filtering the results instead of the walk would report
+  // `use` as an inheritor of Base at depth 2.
+  const hops = impactOfMany(g, [base], 5, "in", new Set<Relation>(["extends"])).map((h) => h.id);
+  assert.deepEqual(hops.sort(), [derived.id, grandchild.id].sort());
+  assert.ok(!hops.includes(user.id), "a `calls` edge is not a step in an inheritance chain");
+});
+
+test("impactOf: the default filter is still every walk relation", () => {
+  const g = inheritGraph();
+  const hops = impactOf(g, base, 5).map((h) => h.id);
+  assert.deepEqual(hops.sort(), [derived.id, grandchild.id, user.id].sort());
+});
+
+test("parseWalkRelations: accepts a list, a comma-separated string, or both", () => {
+  assert.deepEqual(parseWalkRelations("extends"), { ok: ["extends"] });
+  assert.deepEqual(parseWalkRelations("calls,extends"), { ok: ["calls", "extends"] });
+  assert.deepEqual(parseWalkRelations([" Calls ", "extends,calls"]), { ok: ["calls", "extends"] });
+});
+
+test("parseWalkRelations: an unknown or empty filter is an error, never a silent no-op", () => {
+  const bad = parseWalkRelations("inherits");
+  assert.ok("error" in bad && /unknown relation "inherits"/.test(bad.error));
+  // `contains` is a real relation, but deliberately not a walk relation — a file
+  // contains every symbol in it, so walking it would make every same-file symbol
+  // a neighbour.
+  assert.ok("error" in parseWalkRelations("contains"));
+  assert.ok("error" in parseWalkRelations(""));
 });

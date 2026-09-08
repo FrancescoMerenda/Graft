@@ -17,7 +17,8 @@ import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from "./traverse.js";
-import type { GraphV1, NodeV1 } from "./types.js";
+import { WALK_RELATIONS, parseWalkRelations } from "./relations.js";
+import type { GraphV1, NodeV1, Relation } from "./types.js";
 
 export interface CallersCliOptions {
   in?: string;
@@ -26,6 +27,9 @@ export interface CallersCliOptions {
   direction?: string;
   /** max BFS depth, as the raw --depth string (validated here); defaults to 1. */
   depth?: string;
+  /** raw `--relation` values: comma-separated, repeatable, validated here.
+   * Absent means every walk relation. */
+  relation?: string | string[];
   /** the top-level `--dir` override, so this command respects it like every other. */
   globalDir?: string;
 }
@@ -100,14 +104,23 @@ export function callersSavings(
  * `resolve.ts` drops a cross-file call/reference for rather than guessing which
  * one it means. Without saying so, a zero-hit result here reads as "nothing
  * calls this" when it may really be "something does, but the edge was dropped". */
-export function looseNoteFor(direction: Direction, name: string, candidateCount: number): string {
+export function looseNoteFor(
+  direction: Direction,
+  name: string,
+  candidateCount: number,
+  relations?: readonly Relation[],
+): string {
   const label = direction === "out" ? "callees" : "callers";
   const dir = direction === "out" ? "outgoing" : "incoming";
+  // A filtered walk that finds nothing must say what it was looking for, or it
+  // reads as "nothing depends on this" when it means "nothing does, over
+  // `extends`" — the filter is the whole reason the result is empty.
+  const filtered = relations && relations.length ? ` (filtered to ${relations.join(", ")})` : "";
   const ambiguity =
     candidateCount > 1
       ? ` ${candidateCount} definitions share the name "${name}"; a cross-file caller of an ambiguous name is dropped rather than guessed, so this may undercount.`
       : "";
-  return `  no indexed ${label} — the graph has no ${dir} call/reference edges for this symbol as written.${ambiguity} Check the name (try the bare symbol, or "Type.method"), or find its uses with graft grep "${name}". Fall back to raw grep -rn only for unindexed files`;
+  return `  no indexed ${label}${filtered} — the graph has no ${dir} ${relations && relations.length ? relations.join("/") : "call/reference"} edges for this symbol as written.${ambiguity} Check the name (try the bare symbol, or "Type.method"), or find its uses with graft grep "${name}". Fall back to raw grep -rn only for unindexed files`;
 }
 
 interface SymbolJson {
@@ -147,6 +160,18 @@ function hitJson(hit: EdgeHit): HitJson {
     out.span = hit.node.span;
   }
   return out;
+}
+
+/** Parse and validate `--relation`; exits (code 1) on an unknown name. Undefined
+ * (the flag absent) means every walk relation, which the walk itself defaults to. */
+function resolveRelations(raw: string | string[] | undefined): Relation[] | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = parseWalkRelations(raw);
+  if ("error" in parsed) {
+    console.error(`✗ --relation: ${parsed.error}`);
+    process.exit(1);
+  }
+  return "ok" in parsed ? parsed.ok : undefined;
 }
 
 /** Parse and validate the raw `--direction` string; exits (code 1) on garbage. */
@@ -189,6 +214,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
 
   const direction = resolveDirection(opts.direction);
+  const relations = resolveRelations(opts.relation);
   let depth = DEFAULT_DEPTH;
   if (opts.depth !== undefined) {
     // `all` (aka full/max) = the whole transitive closure: walk until no new
@@ -209,16 +235,18 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
   const showDepth = depth > 1;
 
-  const results = matches.map((symbol) => ({ symbol, hits: edgeWalk(graph, symbol, direction, depth) }));
+  const relationSet = relations ? new Set<Relation>(relations) : WALK_RELATIONS;
+  const results = matches.map((symbol) => ({ symbol, hits: edgeWalk(graph, symbol, direction, depth, relationSet) }));
   const saved = callersSavings(graph, results);
 
   if (opts.json) {
     const payload = {
       query,
+      relations,
       matches: results.map((r): MatchJson => {
         const m: MatchJson = { symbol: symbolJson(r.symbol), hits: r.hits.map(hitJson) };
         if (r.hits.length === 0) {
-          m.note = looseNoteFor(direction, r.symbol.name, matches.length);
+          m.note = looseNoteFor(direction, r.symbol.name, matches.length, relations);
         }
         return m;
       }),
@@ -233,7 +261,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   const read = fileReader(root);
   for (const { symbol, hits } of results) {
     lines.push(headerOf(symbol));
-    if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length));
+    if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length, relations));
     else for (const h of hits) lines.push(hitLine(direction, h, showDepth, quoteFor(h, symbol.name, read)));
     lines.push("");
   }

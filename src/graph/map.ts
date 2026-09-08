@@ -20,6 +20,8 @@
  */
 import type { GraphV1, NodeV1 } from "./types.js";
 import { languageLabelOf } from "./extract.js";
+import { containerLangOf } from "./container.js";
+import { genericLangOf } from "./generic.js";
 import { WALK_RELATIONS } from "./relations.js";
 import { scopeLabel, scopeOf, scopesOfGraph } from "./scopes.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
@@ -58,6 +60,32 @@ export interface ScopeGroup {
   dropped: number;
 }
 
+/**
+ * One directory's dependency on another, rolled up from the symbol edges that
+ * cross between them.
+ *
+ * The per-directory lines say how big each part of the repo is and what its
+ * hubs are; nothing said which parts LEAN ON which. That is the first question
+ * anyone asks of an unfamiliar codebase, it is the one thing a file tree can
+ * never answer, and the graph has held the answer all along.
+ */
+export interface DepEdge {
+  /** Depending directory (or file, when the split refinement bottomed out). */
+  from: string;
+  /** Depended-upon directory. */
+  to: string;
+  /** Whether each end is a file rather than a directory — same distinction (and
+   * same cause) as {@link DirEntry.isFile}, so the renderer knows which end may
+   * take a trailing "/". */
+  fromIsFile: boolean;
+  toIsFile: boolean;
+  /** Crossing edges in total — the bundle's weight. */
+  total: number;
+  /** The breakdown, strongest relation first: `calls` and `extends` mean very
+   * different things about a dependency, and merging them loses that. */
+  byRelation: { relation: string; count: number }[];
+}
+
 export interface RepoMap {
   totals: { files: number; symbols: number; edges: number; languages: string[] };
   /** Single-scope repos: sorted by symbol count desc (ties by path asc), capped
@@ -72,6 +100,14 @@ export interface RepoMap {
   scopes?: ScopeGroup[];
   /** Global top hubs by inDegree, ties by name asc then path asc. */
   hotspots: Hub[];
+  /** Inter-directory dependency bundles, heaviest first, capped at `maxDeps`.
+   * Grouped by the same keys as `dirs`/`scopes` (so a line names groups the
+   * reader has just seen), but ranked independently of the `maxDirs` cap — a
+   * heavy dependency is worth reporting even when one of its ends fell off the
+   * directory list. */
+  deps: DepEdge[];
+  /** Dependency bundles beyond the `maxDeps` cap. */
+  depsDropped: number;
   /** Directory groups beyond the `maxDirs` cap — never silently dropped.
    * Multi-scope repos: always 0 here; see each `ScopeGroup.dropped` instead. */
   dropped: number;
@@ -87,11 +123,14 @@ export interface BuildRepoMapOptions {
   hubsPerDir?: number;
   /** Max global hotspots. Default 12. */
   hotspots?: number;
+  /** Max inter-directory dependency bundles listed. Default 12. */
+  maxDeps?: number;
 }
 
 const DEFAULT_MAX_DIRS = 16;
 const DEFAULT_HUBS_PER_DIR = 3;
 const DEFAULT_HOTSPOTS = 12;
+const DEFAULT_MAX_DEPS = 12;
 /** A single group must not exceed this share of all file nodes, or it's
  * refined one path-segment deeper — see the module doc. */
 const SPLIT_THRESHOLD = 0.6;
@@ -127,12 +166,21 @@ function topHubs(nodes: NodeV1[], inDegree: Map<string, number>, cap: number): H
     .slice(0, cap);
 }
 
-/** Display labels, not tree-sitter grammars: a `scripts/` tree of `.mjs` files is
- * "javascript" here, not "typescript". See {@link languageLabelOf}. */
+/**
+ * Display labels, not tree-sitter grammars: a `scripts/` tree of `.mjs` files is
+ * "javascript" here, not "typescript". See {@link languageLabelOf}.
+ *
+ * All three extractor tiers are consulted, in the same order `build.ts` records
+ * a file's language in. Asking only the depth tier — as this did — silently
+ * dropped every breadth-tier language, so a 99% C++ repo whose only indexed
+ * `.ts` files were two build scripts reported itself as "javascript,
+ * typescript": not a rounding error but the wrong answer, on the one line of
+ * the map a reader takes at face value.
+ */
 function sortedLanguages(paths: string[]): string[] {
   const set = new Set<string>();
   for (const p of paths) {
-    const label = languageLabelOf(p);
+    const label = languageLabelOf(p) ?? containerLangOf(p)?.name ?? genericLangOf(p)?.name;
     if (label) set.add(label);
   }
   return [...set].sort();
@@ -155,7 +203,7 @@ function computeDirEntries(
   maxDirs: number,
   hubsPerDir: number,
   stripPrefix: string,
-): { dirs: DirEntry[]; dropped: number } {
+): { dirs: DirEntry[]; dropped: number; groupOf: Map<string, string>; fileGroups: Set<string> } {
   const fileNodes = nodes.filter((n) => n.kind === "file");
   const totalFiles = fileNodes.length;
 
@@ -218,7 +266,73 @@ function computeDirEntries(
   dirEntries.sort((a, b) => b.symbols - a.symbols || a.path.localeCompare(b.path));
   const dropped = Math.max(0, dirEntries.length - maxDirs);
   const dirs = dirEntries.slice(0, maxDirs);
-  return { dirs, dropped };
+
+  // The same assignment the groups above were built from, keyed by file path so
+  // the edge rollup can ask "which group is this endpoint in" without redoing
+  // the split/depth reasoning and risking a different answer.
+  const groupOf = new Map<string, string>();
+  for (const n of nodes) {
+    const rp = relPath(n.path);
+    if (!groupOf.has(n.path)) groupOf.set(n.path, fullPath(dirKey(rp, depthFor(rp))));
+  }
+  // Uncapped, unlike `dirs`: a dependency bundle can name a group that fell off
+  // the directory list, and it still must not be printed as "auth.ts/".
+  const fileGroups = new Set(dirEntries.filter((d) => d.isFile).map((d) => d.path));
+  return { dirs, dropped, groupOf, fileGroups };
+}
+
+/**
+ * Roll every crossing dependency edge up to the directory groups its endpoints
+ * belong to.
+ *
+ * Edges INSIDE a group are dropped rather than counted: a group's internal
+ * cohesion is already visible as its symbol count, and a self-dependency is not
+ * something a reader can act on. Ordered pairs stay separate — `a → b` and
+ * `b → a` are different facts, and a cycle between two directories is worth
+ * seeing as two lines.
+ */
+function computeDeps(
+  graph: GraphV1,
+  groupOf: Map<string, string>,
+  fileGroups: ReadonlySet<string>,
+  maxDeps: number,
+): { deps: DepEdge[]; depsDropped: number } {
+  const pathOf = new Map(graph.nodes.map((n) => [n.id, n.path]));
+  const bundles = new Map<string, { from: string; to: string; total: number; counts: Map<string, number> }>();
+
+  for (const e of graph.edges) {
+    if (!WALK_RELATIONS.has(e.relation)) continue;
+    const sourcePath = pathOf.get(e.source);
+    const targetPath = pathOf.get(e.target);
+    // An unresolved endpoint (a bare module specifier, say) belongs to no
+    // directory in this repo; counting it would invent a dependency.
+    if (sourcePath === undefined || targetPath === undefined) continue;
+    const from = groupOf.get(sourcePath);
+    const to = groupOf.get(targetPath);
+    if (from === undefined || to === undefined || from === to) continue;
+
+    const key = `${from}\u0000${to}`;
+    let b = bundles.get(key);
+    if (!b) {
+      b = { from, to, total: 0, counts: new Map() };
+      bundles.set(key, b);
+    }
+    b.total++;
+    b.counts.set(e.relation, (b.counts.get(e.relation) ?? 0) + 1);
+  }
+
+  const all: DepEdge[] = [...bundles.values()].map((b) => ({
+    from: b.from,
+    to: b.to,
+    fromIsFile: fileGroups.has(b.from),
+    toIsFile: fileGroups.has(b.to),
+    total: b.total,
+    byRelation: [...b.counts.entries()]
+      .map(([relation, count]) => ({ relation, count }))
+      .sort((x, y) => y.count - x.count || x.relation.localeCompare(y.relation)),
+  }));
+  all.sort((a, b) => b.total - a.total || a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  return { deps: all.slice(0, maxDeps), depsDropped: Math.max(0, all.length - maxDeps) };
 }
 
 /**
@@ -246,10 +360,14 @@ export function buildRepoMap(graph: GraphV1, opts: BuildRepoMapOptions = {}): Re
   let dropped: number;
   let scopeGroups: ScopeGroup[] | undefined;
 
+  const groupOf = new Map<string, string>();
+  const fileGroups = new Set<string>();
   if (scopes.length <= 1) {
     const computed = computeDirEntries(graph.nodes, inDegree, maxDirs, hubsPerDir, "");
     dirs = computed.dirs;
     dropped = computed.dropped;
+    for (const [path, key] of computed.groupOf) groupOf.set(path, key);
+    for (const key of computed.fileGroups) fileGroups.add(key);
   } else {
     // Multi-scope: each scope gets its OWN dir breakdown, computed exactly
     // like the single-scope path above but fed only that scope's node
@@ -262,12 +380,15 @@ export function buildRepoMap(graph: GraphV1, opts: BuildRepoMapOptions = {}): Re
     scopeGroups = scopes.map((s) => {
       const nodesInScope = graph.nodes.filter((n) => scopeOf(n.path, scopes).prefix === s.prefix);
       const computed = computeDirEntries(nodesInScope, inDegree, maxDirs, hubsPerDir, s.prefix);
+      for (const [path, key] of computed.groupOf) groupOf.set(path, key);
+      for (const key of computed.fileGroups) fileGroups.add(key);
       return { scope: scopeLabel(s.prefix), dirs: computed.dirs, dropped: computed.dropped };
     });
   }
 
   const allSymbols = graph.nodes.filter((n) => n.kind !== "file");
   const hotspots = topHubs(allSymbols, inDegree, hotspotsN);
+  const { deps, depsDropped } = computeDeps(graph, groupOf, fileGroups, opts.maxDeps ?? DEFAULT_MAX_DEPS);
 
   return {
     totals: {
@@ -279,6 +400,8 @@ export function buildRepoMap(graph: GraphV1, opts: BuildRepoMapOptions = {}): Re
     dirs,
     scopes: scopeGroups,
     hotspots,
+    deps,
+    depsDropped,
     dropped,
     saved: savingsFor(graph, fileNodes.map((f) => f.path)),
   };
@@ -304,6 +427,17 @@ function formatDirLine(d: DirEntry): string {
   const counts = `${d.files} files · ${d.symbols} symbols`;
   const hubs = d.hubs.length ? `   hubs: ${d.hubs.map(formatDirHub).join(", ")}` : "";
   return `${label}${counts}${hubs}`;
+}
+
+/** `src/graph/ → src/util/   50 edges (42 calls, 8 references)` — the arrow is
+ * the direction of dependency: the left side needs the right side. */
+function depPair(d: DepEdge): string {
+  return `${d.fromIsFile ? d.from : `${d.from}/`} → ${d.toIsFile ? d.to : `${d.to}/`}`;
+}
+
+function formatDepLine(d: DepEdge, width: number): string {
+  const breakdown = d.byRelation.map((r) => `${r.count} ${r.relation}`).join(", ");
+  return `${depPair(d).padEnd(width)}${d.total} edge${d.total === 1 ? "" : "s"} (${breakdown})`;
 }
 
 function formatHotspot(h: Hub): string {
@@ -341,6 +475,18 @@ export function formatRepoMap(map: RepoMap): string {
     for (const d of map.dirs) lines.push(formatDirLine(d));
     const note = droppedNote(map.dropped);
     if (note) lines.push(note);
+    lines.push("");
+  }
+  if (map.deps.length) {
+    lines.push("depends on");
+    // Padded to the widest pair actually printed, not a fixed column: directory
+    // names vary wildly between repos, and a fixed width either wraps a deep
+    // tree or leaves a gulf in a shallow one.
+    const width = Math.max(...map.deps.map((d) => depPair(d).length)) + 3;
+    for (const d of map.deps) lines.push(formatDepLine(d, width));
+    if (map.depsDropped > 0) {
+      lines.push(`… +${map.depsDropped} more dependenc${map.depsDropped === 1 ? "y" : "ies"} not shown (raise max-deps to see more)`);
+    }
     lines.push("");
   }
   lines.push(`hotspots: ${map.hotspots.map(formatHotspot).join("  ")}`);

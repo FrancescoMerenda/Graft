@@ -11,6 +11,7 @@ import { patchBuildConfig, type BuildConfig } from "../util/state.js";
 import type { EngineConfig } from "../ai/providers.js";
 import { formatAsk } from "../ask/ask.js";
 import type { Direction } from "./traverse.js";
+import type { Relation } from "./types.js";
 import {
   federateAsk,
   federateCallers,
@@ -133,7 +134,7 @@ export function runWorkspaceCallers(
   root: string,
   override: string | undefined,
   symbol: string,
-  opts: { direction?: Direction; depth?: number; in?: string },
+  opts: { direction?: Direction; depth?: number; in?: string; relations?: readonly Relation[] },
 ): void {
   const { text, found } = federateCallers(root, override, symbol, opts);
   if (!found) {

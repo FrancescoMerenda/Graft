@@ -22,6 +22,7 @@ import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
 import { nearestGraftRoot } from "./graph/root.js";
+import { parseWalkRelations } from "./graph/relations.js";
 import { unsupportedExtensions, supportedExtensions } from "./graph/source-files.js";
 import { discoverWorkspaceChildren } from "./graph/scopes.js";
 import {
@@ -764,6 +765,11 @@ program
   .argument("<symbol>", "bare name, qualified (Class.method), or package-qualified (pkg.Fn)")
   .argument(...DIR_ARG)
   .option("--direction <in|out>", 'edge direction: "in" = callers (default), "out" = callees')
+  .option(
+    "--relation <names>",
+    'only follow these edge kinds (comma-separated, repeatable): calls, references, imports, implements, extends. Default: all of them. e.g. --relation extends answers "what subclasses this"',
+    (value: string, prev: string[] = []) => [...prev, value],
+  )
   .option("-d, --depth <n>", 'walk transitively up to N hops for blast radius, or "all" for the full connected closure (default 1)')
   .option("--in <path>", "narrow matches to nodes at or under this path prefix")
   .option("--json", "output as JSON")
@@ -772,14 +778,21 @@ program
     async (
       symbol: string,
       dirArg: string | undefined,
-      opts: { direction?: string; depth?: string; in?: string; json?: boolean; refresh?: boolean },
+      opts: { direction?: string; depth?: string; relation?: string[]; in?: string; json?: boolean; refresh?: boolean },
     ) => {
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
       const globalOpts = program.opts<{ dir?: string }>();
       if (!opts.json && readWorkspace(dir, globalOpts.dir)) {
+        const parsed = opts.relation ? parseWalkRelations(opts.relation) : undefined;
+        if (parsed && "error" in parsed) {
+          console.error(`✗ --relation: ${parsed.error}`);
+          process.exit(1);
+          return;
+        }
         runWorkspaceCallers(dir, globalOpts.dir, symbol, {
           direction: opts.direction === "out" ? "out" : "in",
+          relations: parsed && "ok" in parsed ? parsed.ok : undefined,
           depth: opts.depth
             ? (/^(all|full|max)$/i.test(opts.depth) ? Number.POSITIVE_INFINITY : Number(opts.depth))
             : undefined,
@@ -790,6 +803,7 @@ program
       const { runCallersCommand } = await import("./graph/traverse-cli.js");
       runCallersCommand(symbol, dir, {
         direction: opts.direction,
+        relation: opts.relation,
         depth: opts.depth,
         in: opts.in,
         json: opts.json,
@@ -870,13 +884,14 @@ program
 program
   .command("map")
   .description(
-    "Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots from the wiring graph ($0, no LLM)",
+    "Token-budgeted repo orientation — directory clusters, which directory depends on which, per-directory hubs, and global hotspots from the wiring graph ($0, no LLM)",
   )
   .argument(...DIR_ARG)
   .option("--max-dirs <n>", "max directory entries shown, rest counted into dropped (default 16)")
+  .option("--max-deps <n>", "max inter-directory dependency bundles shown (default 12)")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
-  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; refresh?: boolean }) => {
+  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; maxDeps?: string; refresh?: boolean }) => {
     const dir = noteQuery(queryRoot(dirArg));
     const root = resolve(dir);
     const globalOpts = program.opts<{ dir?: string }>();
@@ -889,6 +904,16 @@ program
         return;
       }
       maxDirsW = n;
+    }
+    let maxDepsW: number | undefined;
+    if (opts.maxDeps !== undefined) {
+      const n = parseInt(opts.maxDeps, 10);
+      if (!Number.isFinite(n) || n < 0) {
+        console.error(`✗ --max-deps must be a non-negative integer, got "${opts.maxDeps}"`);
+        process.exit(1);
+        return;
+      }
+      maxDepsW = n;
     }
     await refreshBefore(dir, opts); // after arg validation: a bad flag shouldn't cost a rebuild
     if (!opts.json && readWorkspace(root, globalOpts.dir)) {
@@ -903,7 +928,7 @@ program
       process.exit(1);
       return;
     }
-    const map = buildRepoMap(graph, { maxDirs: maxDirsW });
+    const map = buildRepoMap(graph, { maxDirs: maxDirsW, maxDeps: maxDepsW });
     if (opts.json) {
       console.log(JSON.stringify(map, null, 2));
       return;
